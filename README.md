@@ -1,2 +1,2 @@
 # Nachtigall
-Forecasting of weather dependent events
+Geospatial and meteorological predictive modeling - Forecasting of weather dependent factors
