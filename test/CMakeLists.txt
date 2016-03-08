@@ -5,4 +5,4 @@ add_executable (
    gas_consumption.cpp
 )
 
-add_dependencies(gas_consumption n8tigall)
+TARGET_LINK_LIBRARIES(gas_consumption n8tigall)

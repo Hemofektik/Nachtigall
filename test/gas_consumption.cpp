@@ -24,12 +24,13 @@ int main(int argc, const char* argv[])
 			std::tm tm = {};
 			std::stringstream ss(dateStr);
 			ss >> std::get_time(&tm, "%Y-%m-%d");
-			auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-			auto date = year_month_day(round<days>(tp));
+			const auto timePoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+			const auto dayPoint = round<days>(timePoint);
+			//auto date = year_month_day();
 
 			auto sample = ISample::Create();
 			sample->SetValue(0, consumptionRate);
-			gts->AddTimeSample(date, sample);
+			gts->AddTimeSample(dayPoint, sample);
 		}
 	}
 

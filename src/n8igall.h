@@ -7,7 +7,7 @@ namespace n8igall
 	struct ISample
 	{
 		virtual ~ISample() {};
-		virtual void SetValue(int dimension, double value) = 0;
+		virtual void SetValue(u32 dimension, double value) = 0;
 
 		static ISample* Create(u32 numDimensions = 1);
 	};
