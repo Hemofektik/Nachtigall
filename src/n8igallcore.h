@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdlib>
 #include <memory>
+#include <date.h>
 
 namespace n8igall
 {

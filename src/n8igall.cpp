@@ -10,15 +10,15 @@
 
 namespace n8igall
 {
-	struct Brain : public IBrain
+	struct GeoClimateCorrelator : public IGeoClimateCorrelator
 	{
-		virtual ~Brain() {};
+		virtual ~GeoClimateCorrelator() {};
 
 	};
 
 
-	IBrain* Create()
+	IGeoClimateCorrelator* Create()
 	{
-		return new Brain();
+		return new GeoClimateCorrelator();
 	}
 }

@@ -13,21 +13,27 @@ using namespace std::chrono;
 
 int main(int argc, const char* argv[])
 {
-	int numFailedTests = 0;
+	unique_ptr<IGeoTimeSeries> gts(IGeoTimeSeries::Create(13.2759793, 52.6673332));
 
-	io::CSVReader<2, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("../../test/data/gas_consumption.csv");
-
-	//in.read_header(io::ignore_extra_column, "date", "consumption_rate");
-	const char* dateStr; double consumptionRate;
-	while (in.read_row(dateStr, consumptionRate))
+	// read the data from csv file
 	{
-		
-		std::tm tm = {};
-		std::stringstream ss(dateStr);
-		ss >> std::get_time(&tm, "%Y-%m-%d");
-		auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
-		auto date = year_month_day(round<days>(tp));
+		io::CSVReader<2, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("../../test/data/gas_consumption.csv");
+		const char* dateStr; double consumptionRate;
+		while (in.read_row(dateStr, consumptionRate))
+		{
+			std::tm tm = {};
+			std::stringstream ss(dateStr);
+			ss >> std::get_time(&tm, "%Y-%m-%d");
+			auto tp = std::chrono::system_clock::from_time_t(std::mktime(&tm));
+			auto date = year_month_day(round<days>(tp));
+
+			auto sample = ISample::Create();
+			sample->SetValue(0, consumptionRate);
+			gts->AddTimeSample(date, sample);
+		}
 	}
 
-	return numFailedTests;
+	// TODO: pass time series to IGeoClimateCorrelator and see what happens next
+
+	return 0;
 }
