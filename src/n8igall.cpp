@@ -6,8 +6,11 @@
 #include <chrono>
 #include <locale>
 #include <cassert>
+#include <unzip.h>
+#include <sstream>
 
 #include "n8igall.h"
+#include "utils/DWD_CDC.h"
 
 using namespace std;
 using namespace date;
@@ -32,7 +35,7 @@ namespace n8igall
 			delete[] values;
 		};
 
-		virtual void SetValue(u32 dimension, double value) override
+		virtual void SetValue(double value, u32 dimension) override
 		{
 			assert(dimension < numDimensions);
 			values[dimension] = value;
@@ -86,12 +89,24 @@ namespace n8igall
 
 	struct GeoClimateCorrelator : public IGeoClimateCorrelator
 	{
-		virtual ~GeoClimateCorrelator() {};
+	private:
+		DWD_CDC dwd_CDC;
 
+	public:
+		GeoClimateCorrelator()
+		{
+		}
+
+		virtual IGeoTimeSeriesClimateCorrelation* DeriveCorrelation(const IGeoTimeSeries* geoTimeSeries) const override
+		{
+			return NULL;
+		}
+
+		virtual ~GeoClimateCorrelator() {}
 	};
 
 
-	IGeoClimateCorrelator* Create()
+	IGeoClimateCorrelator* IGeoClimateCorrelator::Create()
 	{
 		return new GeoClimateCorrelator();
 	}

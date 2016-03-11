@@ -29,6 +29,8 @@ endif()
 
 include_directories(
 	${CMAKE_SOURCE_DIR}/3rdparty/zlib
+	${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip
+	${CMAKE_BINARY_DIR}/3rdparty/zlib
 	${CMAKE_SOURCE_DIR}/3rdparty/fast-cpp-csv-parser
 	${CMAKE_SOURCE_DIR}/3rdparty/date
 )

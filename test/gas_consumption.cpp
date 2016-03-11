@@ -29,12 +29,13 @@ int main(int argc, const char* argv[])
 			//auto date = year_month_day();
 
 			auto sample = ISample::Create();
-			sample->SetValue(0, consumptionRate);
+			sample->SetValue(consumptionRate);
 			gts->AddTimeSample(dayPoint, sample);
 		}
 	}
 
-	// TODO: pass time series to IGeoClimateCorrelator and see what happens next
+	unique_ptr<IGeoClimateCorrelator> gcc(IGeoClimateCorrelator::Create());
+	unique_ptr<IGeoTimeSeriesClimateCorrelation> gtscc(gcc->DeriveCorrelation(gts.get()));
 
 	return 0;
 }
