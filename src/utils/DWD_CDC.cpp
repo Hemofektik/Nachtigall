@@ -8,9 +8,12 @@
 #include <cassert>
 #include <unzip.h>
 #include <sstream>
+#include <regex>
+#include <experimental/filesystem>
 
 #include "DWD_CDC.h"
 
+using namespace std::experimental::filesystem::v1;
 using namespace std;
 using namespace date;
 
@@ -44,7 +47,35 @@ namespace n8igall
 
 	DWD_CDC::DWD_CDC()
 	{
-		retrievestringfromarchive("produkt_klima_Tageswerte_19710301_20151231_00044.txt");	
+		const path CDCSourceDir("../CDC/");
+
+		for (directory_iterator di(CDCSourceDir); di != end(di); di++)
+		{
+			const auto& entity = *di;
+			const auto extension = entity.path().extension();
+			if (is_regular_file(entity.status()))
+			{
+				//string filepath = entity.path().string();
+				string filename = entity.path().filename().string();
+
+				// example zip file name: tageswerte_00044_19710301_20151231_hist.zip
+				std::regex regex("tageswerte_(\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_hist\\.zip");
+				std::smatch matches;
+
+				if (!std::regex_match(filename, matches, regex)) continue;
+
+				std::string stationId = matches[1].str();
+				std::string startDate = matches[2].str();
+				std::string endDate = matches[3].str();
+
+				// example csv file name 1: produkt_klima_Tageswerte_19710301_20151231_00044.txt
+				// example csv file name 2: Stationsmetadaten_klima_stationen_02303_19710301_20151231.txt
+
+				// TODO: read csv files
+			}
+		}
+
+		retrievestringfromarchive("produkt_klima_Tageswerte_19710301_20151231_00044.txt");
 	}
 
 	DWD_CDC::~DWD_CDC()

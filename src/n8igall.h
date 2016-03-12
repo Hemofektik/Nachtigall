@@ -18,7 +18,7 @@ namespace n8igall
 
 		// Adds a sample along with its proper time point.
 		// The sample's ownership is transferred to the GeoTimeSeries.
-		virtual void AddTimeSample(date::day_point dayPoint, const ISample* sample) = 0;
+		virtual void AddTimeSample(dayPoint dayPoint, const ISample* sample) = 0;
 
 		static IGeoTimeSeries* Create(double longitude, double latitude, u32 numDimensions = 1);
 	};

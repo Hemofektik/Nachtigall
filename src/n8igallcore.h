@@ -25,4 +25,6 @@ namespace n8igall
 
 	typedef float			f32;
 	typedef double			f64;
+
+	typedef date::day_point dayPoint;
 }

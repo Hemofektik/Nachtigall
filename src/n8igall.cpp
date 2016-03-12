@@ -74,7 +74,7 @@ namespace n8igall
 			}
 		};
 
-		virtual void AddTimeSample(day_point dayPoint, const ISample* sample) override
+		virtual void AddTimeSample(dayPoint dayPoint, const ISample* sample) override
 		{
 			timeSeries[dayPoint] = dynamic_cast<const Sample*>(sample);
 		}
