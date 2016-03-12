@@ -19,31 +19,56 @@ using namespace date;
 
 namespace n8igall
 {
-	std::string retrievestringfromarchive(std::string filename)
+	struct ZipFile
 	{
-		// Open the zip file
-		unzFile zipfile = unzOpen("../CDC/tageswerte_00044_19710301_20151231_hist.zip");
-		if (zipfile == NULL)
+	private:
+		unzFile zipfile;
+
+	public:
+		ZipFile(const string& filepath)
 		{
-			return "";
+			zipfile = unzOpen(filepath.c_str());
 		}
 
-		unz_file_info info;
+		~ZipFile()
+		{
+			unzClose(zipfile);
+		}
 
-		unzLocateFile(zipfile, filename.c_str(), NULL);
-		unzOpenCurrentFile(zipfile);
-		unzGetCurrentFileInfo(zipfile, &info, NULL, 0, NULL, 0, NULL, 0);
-		u8* rwh = (u8*)malloc(info.uncompressed_size);
-		unzReadCurrentFile(zipfile, rwh, info.uncompressed_size);
+		bool IsOK() const
+		{
+			return zipfile != NULL;
+		}
 
-		std::stringstream tempstream;
-		tempstream << ((const char*)rwh);
-		free(rwh);
+		string ReadStringFromFile(const string& filename)
+		{
+			if (UNZ_OK != unzLocateFile(zipfile, filename.c_str(), NULL))
+			{
+				return "";
+			}
 
-		unzClose(zipfile);
+			if (UNZ_OK != unzOpenCurrentFile(zipfile))
+			{
+				return "";
+			}
 
-		return tempstream.str();
-	}
+			unz_file_info info;
+			if (UNZ_OK != unzGetCurrentFileInfo(zipfile, &info, NULL, 0, NULL, 0, NULL, 0))
+			{
+				return "";
+			}
+			
+			string result;
+			result.resize(info.uncompressed_size);
+
+			if (info.uncompressed_size != unzReadCurrentFile(zipfile, &result.front(), info.uncompressed_size))
+			{
+				return "";
+			}
+
+			return result;
+		}
+	};
 
 	DWD_CDC::DWD_CDC()
 	{
@@ -59,23 +84,31 @@ namespace n8igall
 				string filename = entity.path().filename().string();
 
 				// example zip file name: tageswerte_00044_19710301_20151231_hist.zip
-				std::regex regex("tageswerte_(\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_hist\\.zip");
-				std::smatch matches;
+				regex regex("tageswerte_(\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_(\\d\\d\\d\\d\\d\\d\\d\\d)_hist\\.zip");
+				smatch matches;
 
-				if (!std::regex_match(filename, matches, regex)) continue;
+				if (!regex_match(filename, matches, regex)) continue;
 
-				std::string stationId = matches[1].str();
-				std::string startDate = matches[2].str();
-				std::string endDate = matches[3].str();
+				string stationId = matches[1].str();
+				string startDate = matches[2].str();
+				string endDate = matches[3].str();
 
-				// example csv file name 1: produkt_klima_Tageswerte_19710301_20151231_00044.txt
-				// example csv file name 2: Stationsmetadaten_klima_stationen_02303_19710301_20151231.txt
+				ZipFile zipFile(entity.path().string());
+				if (!zipFile.IsOK()) continue;
 
-				// TODO: read csv files
+				string dayValuesFilename = "produkt_klima_Tageswerte_" + startDate + "_" + endDate + "_" + stationId + ".txt";
+				auto dayValuesCSVString = zipFile.ReadStringFromFile(dayValuesFilename);
+				if (dayValuesCSVString.size() == 0) continue;
+
+				string stationMetaDataFilename = "Stationsmetadaten_klima_stationen_" + stationId + "_" + startDate + "_" + endDate + + ".txt";
+				auto stationMetaDataCSVString = zipFile.ReadStringFromFile(stationMetaDataFilename);
+				if (stationMetaDataCSVString.size() == 0) continue;
+
+				// TODO: parse csv files
 			}
 		}
 
-		retrievestringfromarchive("produkt_klima_Tageswerte_19710301_20151231_00044.txt");
+		//retrievestringfromarchive("produkt_klima_Tageswerte_19710301_20151231_00044.txt");
 	}
 
 	DWD_CDC::~DWD_CDC()
