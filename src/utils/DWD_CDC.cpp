@@ -10,6 +10,7 @@
 #include <sstream>
 #include <regex>
 #include <experimental/filesystem>
+#include <csv.h>
 
 #include "DWD_CDC.h"
 
@@ -66,6 +67,11 @@ namespace n8igall
 				return "";
 			}
 
+			if (result.back() == 26) // remove substitute character
+			{
+				result.pop_back();
+			}
+
 			return result;
 		}
 	};
@@ -105,10 +111,23 @@ namespace n8igall
 				if (stationMetaDataCSVString.size() == 0) continue;
 
 				// TODO: parse csv files
+
+				stringstream dayValuesCSV;
+				dayValuesCSV << dayValuesCSVString;
+
+				io::CSVReader<17, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("DayValuesCSV", dayValuesCSV);
+
+				in.read_header(io::ignore_extra_column, "STATIONS_ID", "MESS_DATUM", "QUALITAETS_NIVEAU", "LUFTTEMPERATUR", "DAMPFDRUCK", "BEDECKUNGSGRAD", "LUFTDRUCK_STATIONSHOEHE", "REL_FEUCHTE", "WINDGESCHWINDIGKEIT", "LUFTTEMPERATUR_MAXIMUM", "LUFTTEMPERATUR_MINIMUM", "LUFTTEMP_AM_ERDB_MINIMUM", "WINDSPITZE_MAXIMUM", "NIEDERSCHLAGSHOEHE", "NIEDERSCHLAGSHOEHE_IND", "SONNENSCHEINDAUER", "SCHNEEHOEHE");
+
+				int STATIONS_ID;
+				u64 MESS_DATUM;
+				int QUALITAETS_NIVEAU;
+				double LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE;
+				while (in.read_row(STATIONS_ID, MESS_DATUM, QUALITAETS_NIVEAU, LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE))
+				{
+				}
 			}
 		}
-
-		//retrievestringfromarchive("produkt_klima_Tageswerte_19710301_20151231_00044.txt");
 	}
 
 	DWD_CDC::~DWD_CDC()
