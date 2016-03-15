@@ -1,6 +1,13 @@
 
 #include "../src/n8igall.h"
+
+#pragma warning(push)
+#pragma warning(disable:4996)
+#pragma warning(disable:4244)
+#pragma warning(disable:4267)
 #include <csv.h>
+#pragma warning(pop)
+
 #include <date.h>
 #include <sstream>
 #include <iomanip>

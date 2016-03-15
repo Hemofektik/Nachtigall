@@ -10,7 +10,13 @@
 #include <sstream>
 #include <regex>
 #include <experimental/filesystem>
+
+#pragma warning(push)
+#pragma warning(disable:4996)
+#pragma warning(disable:4244)
+#pragma warning(disable:4267)
 #include <csv.h>
+#pragma warning(pop)
 
 #include "DWD_CDC.h"
 
@@ -72,6 +78,13 @@ namespace n8igall
 				result.pop_back();
 			}
 
+			// fix broken meta files which have one extra empty column in header but missing in data
+			const auto location = result.find("Stationsname;");
+			if (location != string::npos)
+			{
+				result[location + 12] = ' ';
+			}
+
 			return result;
 		}
 	};
@@ -110,21 +123,40 @@ namespace n8igall
 				auto stationMetaDataCSVString = zipFile.ReadStringFromFile(stationMetaDataFilename);
 				if (stationMetaDataCSVString.size() == 0) continue;
 
-				// TODO: parse csv files
-
-				stringstream dayValuesCSV;
-				dayValuesCSV << dayValuesCSVString;
-
-				io::CSVReader<17, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("DayValuesCSV", dayValuesCSV);
-
-				in.read_header(io::ignore_extra_column, "STATIONS_ID", "MESS_DATUM", "QUALITAETS_NIVEAU", "LUFTTEMPERATUR", "DAMPFDRUCK", "BEDECKUNGSGRAD", "LUFTDRUCK_STATIONSHOEHE", "REL_FEUCHTE", "WINDGESCHWINDIGKEIT", "LUFTTEMPERATUR_MAXIMUM", "LUFTTEMPERATUR_MINIMUM", "LUFTTEMP_AM_ERDB_MINIMUM", "WINDSPITZE_MAXIMUM", "NIEDERSCHLAGSHOEHE", "NIEDERSCHLAGSHOEHE_IND", "SONNENSCHEINDAUER", "SCHNEEHOEHE");
-
-				int STATIONS_ID;
-				u64 MESS_DATUM;
-				int QUALITAETS_NIVEAU;
-				double LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE;
-				while (in.read_row(STATIONS_ID, MESS_DATUM, QUALITAETS_NIVEAU, LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE))
+				// parse daily values
 				{
+					stringstream dayValuesCSV;
+					dayValuesCSV << dayValuesCSVString;
+
+					io::CSVReader<17, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("DayValuesCSV", dayValuesCSV);
+
+					in.read_header(io::ignore_extra_column, "STATIONS_ID", "MESS_DATUM", "QUALITAETS_NIVEAU", "LUFTTEMPERATUR", "DAMPFDRUCK", "BEDECKUNGSGRAD", "LUFTDRUCK_STATIONSHOEHE", "REL_FEUCHTE", "WINDGESCHWINDIGKEIT", "LUFTTEMPERATUR_MAXIMUM", "LUFTTEMPERATUR_MINIMUM", "LUFTTEMP_AM_ERDB_MINIMUM", "WINDSPITZE_MAXIMUM", "NIEDERSCHLAGSHOEHE", "NIEDERSCHLAGSHOEHE_IND", "SONNENSCHEINDAUER", "SCHNEEHOEHE");
+
+					int STATIONS_ID;
+					u64 MESS_DATUM;
+					int QUALITAETS_NIVEAU;
+					double LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE;
+					while (in.read_row(STATIONS_ID, MESS_DATUM, QUALITAETS_NIVEAU, LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE))
+					{
+					}
+				}
+
+				// parse meta data
+				{
+					stringstream stationMetaDataCSV;
+					stationMetaDataCSV << stationMetaDataCSVString;
+
+					io::CSVReader<7, io::trim_chars<' ', '\t'>, io::no_quote_escape<';'>> in("stationMetaDataCSV", stationMetaDataCSV);
+
+					in.read_header(io::ignore_extra_column, "Stations_id", "Stationshoehe", "Geogr.Breite", "Geogr.Laenge", "von_datum", "bis_datum", "Stationsname");
+
+					int Stations_id, Stationshoehe;
+					double Geogr_Breite, Geogr_Laenge;
+					u64 von_datum, bis_datum;
+					const char* Stationsname;
+					while (in.read_row(Stations_id, Stationshoehe, Geogr_Breite, Geogr_Laenge, von_datum, bis_datum, Stationsname))
+					{
+					}
 				}
 			}
 		}
