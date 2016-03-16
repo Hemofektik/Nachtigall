@@ -89,7 +89,9 @@ namespace n8igall
 		}
 	};
 
-	DWD_CDC::DWD_CDC()
+	DWD_CDC::DWD_CDC() 
+		: stations(NULL)
+		, numStations(0)
 	{
 		const path CDCSourceDir("../CDC/");
 
@@ -123,7 +125,8 @@ namespace n8igall
 				auto stationMetaDataCSVString = zipFile.ReadStringFromFile(stationMetaDataFilename);
 				if (stationMetaDataCSVString.size() == 0) continue;
 
-				// parse daily values
+				// parse daily samples
+				map<dayPoint, DaySample> samples;
 				{
 					stringstream dayValuesCSV;
 					dayValuesCSV << dayValuesCSVString;
@@ -134,10 +137,15 @@ namespace n8igall
 
 					int STATIONS_ID;
 					u64 MESS_DATUM;
-					int QUALITAETS_NIVEAU;
-					double LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE;
-					while (in.read_row(STATIONS_ID, MESS_DATUM, QUALITAETS_NIVEAU, LUFTTEMPERATUR, DAMPFDRUCK, BEDECKUNGSGRAD, LUFTDRUCK_STATIONSHOEHE, REL_FEUCHTE, WINDGESCHWINDIGKEIT, LUFTTEMPERATUR_MAXIMUM, LUFTTEMPERATUR_MINIMUM, LUFTTEMP_AM_ERDB_MINIMUM, WINDSPITZE_MAXIMUM, NIEDERSCHLAGSHOEHE, NIEDERSCHLAGSHOEHE_IND, SONNENSCHEINDAUER, SCHNEEHOEHE))
+					DaySample sample;
+					while (in.read_row(STATIONS_ID, MESS_DATUM, sample.QUALITAETS_NIVEAU, sample.LUFTTEMPERATUR, sample.DAMPFDRUCK, sample.BEDECKUNGSGRAD, sample.LUFTDRUCK_STATIONSHOEHE, sample.REL_FEUCHTE, sample.WINDGESCHWINDIGKEIT, sample.LUFTTEMPERATUR_MAXIMUM, sample.LUFTTEMPERATUR_MINIMUM, sample.LUFTTEMP_AM_ERDB_MINIMUM, sample.WINDSPITZE_MAXIMUM, sample.NIEDERSCHLAGSHOEHE, sample.NIEDERSCHLAGSHOEHE_IND, sample.SONNENSCHEINDAUER, sample.SCHNEEHOEHE))
 					{
+						year y((int)(MESS_DATUM / 10000));
+						month m((int)(MESS_DATUM / 100) - (((u64)(int)y) * 100));
+						day d((unsigned int)(MESS_DATUM - ((u64)((int)y) * 10000) - (u64)((unsigned)m * 100)));
+						dayPoint date = year_month_day(y, m, d);
+
+						samples[date] = sample;
 					}
 				}
 
@@ -164,6 +172,17 @@ namespace n8igall
 
 	DWD_CDC::~DWD_CDC()
 	{
+		delete[] stations;
+	}
 
+	size DWD_CDC::GetNumStations() const
+	{
+		return numStations;
+	}
+
+	const DWD_CDC::Station& DWD_CDC::GetStation(size index) const
+	{
+		assert(index < numStations);
+		return stations[index];
 	}
 }
