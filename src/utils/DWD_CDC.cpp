@@ -90,8 +90,6 @@ namespace n8igall
 	};
 
 	DWD_CDC::DWD_CDC() 
-		: stations(NULL)
-		, numStations(0)
 	{
 		const path CDCSourceDir("../CDC/");
 
@@ -158,13 +156,17 @@ namespace n8igall
 
 					in.read_header(io::ignore_extra_column, "Stations_id", "Stationshoehe", "Geogr.Breite", "Geogr.Laenge", "von_datum", "bis_datum", "Stationsname");
 
-					int Stations_id, Stationshoehe;
-					double Geogr_Breite, Geogr_Laenge;
+					// we read all the data into same entity to get the last entry as the final one
+					Station station;
 					u64 von_datum, bis_datum;
 					const char* Stationsname;
-					while (in.read_row(Stations_id, Stationshoehe, Geogr_Breite, Geogr_Laenge, von_datum, bis_datum, Stationsname))
+					while (in.read_row(station.Stations_id, station.Stationshoehe, station.Geogr_Breite, station.Geogr_Laenge, von_datum, bis_datum, Stationsname))
 					{
+						station.Stationsname = Stationsname;
 					}
+
+					station.samples = samples;
+					stations.push_back(station);
 				}
 			}
 		}
@@ -172,17 +174,15 @@ namespace n8igall
 
 	DWD_CDC::~DWD_CDC()
 	{
-		delete[] stations;
 	}
 
 	size DWD_CDC::GetNumStations() const
 	{
-		return numStations;
+		return stations.size();
 	}
 
 	const DWD_CDC::Station& DWD_CDC::GetStation(size index) const
 	{
-		assert(index < numStations);
 		return stations[index];
 	}
 }

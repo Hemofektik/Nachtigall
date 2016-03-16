@@ -35,7 +35,6 @@ namespace n8igall
 		const Station& GetStation(size index) const;
 
 	private:
-		Station* stations;
-		size numStations;
+		std::vector<Station> stations;
 	};
 }
