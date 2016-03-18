@@ -89,9 +89,9 @@ namespace n8igall
 		}
 	};
 
-	DWD_CDC::DWD_CDC() 
+	DWD_CDC::DWD_CDC(string cdcDir)
 	{
-		const path CDCSourceDir("../CDC/");
+		const path CDCSourceDir(cdcDir);
 
 		for (directory_iterator di(CDCSourceDir); di != end(di); di++)
 		{

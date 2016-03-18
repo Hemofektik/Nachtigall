@@ -10,3 +10,6 @@
 [submodule "3rdparty/fann"]
 	path = 3rdparty/fann
 	url = https://github.com/libfann/fann.git
+[submodule "3rdparty/proj.4"]
+	path = 3rdparty/proj.4
+	url = https://github.com/OSGeo/proj.4.git

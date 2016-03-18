@@ -34,15 +34,17 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/3rdparty/fast-cpp-csv-parser
 	${CMAKE_SOURCE_DIR}/3rdparty/date
 	${CMAKE_SOURCE_DIR}/3rdparty/fann/src/include
+	${CMAKE_SOURCE_DIR}/3rdparty/proj.4/src
 )
-
 
 add_subdirectory(3rdparty/zlib EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/fann EXCLUDE_FROM_ALL)
+add_subdirectory(3rdparty/proj.4 EXCLUDE_FROM_ALL)
 
 set  (THIRDPARTY
 		zlib
-		doublefann)
+		doublefann
+		proj)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 

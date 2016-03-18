@@ -27,7 +27,7 @@ namespace n8igall
 			std::map<dayPoint, DaySample> samples;
 		};
 
-		DWD_CDC();
+		DWD_CDC(std::string cdcDir);
 		DWD_CDC(const DWD_CDC&) = delete;
 		~DWD_CDC();
 

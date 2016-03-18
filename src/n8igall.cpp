@@ -5,11 +5,13 @@
 #include <iomanip>
 #include <chrono>
 #include <locale>
+#include <limits>
 #include <cassert>
 #include <unzip.h>
 #include <sstream>
 #include <doublefann.h>
 #include <fann_cpp.h>
+#include <proj_api.h>
 
 #include "n8igall.h"
 #include "utils/DWD_CDC.h"
@@ -100,27 +102,51 @@ namespace n8igall
 
 		const DWD_CDC::Station& FindNearestStation(double lon, double lat) const
 		{
-			const auto& nearestStation = dwd_CDC.GetStation(0);
+			projCtx ctx = pj_ctx_alloc();
+
+			// create Azimuthal Equidistant projection where requested lon and lat is at its center (0,0) to remove any projection induced distortions
+			string aeqdProjStr = "+proj=aeqd +lon_0=" + to_string(lon) + " +lat_0=" + to_string(lat) + "+ellps=WGS84 +datum=WGS84 +unit=m +no_defs";
+			projPJ aeqd = pj_init_plus_ctx(ctx, aeqdProjStr.c_str());
+			projPJ epsg4326 = pj_init_plus_ctx(ctx, "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs");
+
+			double minSqrDistance = numeric_limits<double>::max();
+			size nearestStationIndex = string::npos;
 
 			for (size s = 0; s < dwd_CDC.GetNumStations(); s++)
 			{
-				const auto& station = dwd_CDC.GetStation(s);
+				auto& station = dwd_CDC.GetStation(s);
 
-				// TODO: check distance
+				double X = station.Geogr_Laenge * DEG_TO_RAD;
+				double Y = station.Geogr_Breite * DEG_TO_RAD;
+				pj_transform(epsg4326, aeqd, 1, 1, &X, &Y, NULL);
+				const double sqrDistance = X * X + Y * Y;
+
+				if (minSqrDistance > sqrDistance)
+				{
+					minSqrDistance = sqrDistance;
+					nearestStationIndex = s;
+				}
 			}
 
-			return nearestStation;
+			pj_free(aeqd);
+			pj_free(epsg4326);
+			pj_ctx_free(ctx);
+
+			cout << " nearest station " << nearestStationIndex << " " << dwd_CDC.GetStation(nearestStationIndex).Stationsname << endl;
+			cout << " distance: " << sqrt(minSqrDistance) << " m (id: " << dwd_CDC.GetStation(nearestStationIndex).Stations_id << ")" << endl;
+
+			return dwd_CDC.GetStation(nearestStationIndex);
 		}
 
 	public:
 		GeoClimateCorrelator()
+			: dwd_CDC("../../test/data/") // TODO: set this by using libconfig
 		{
 		}
 
 		virtual IGeoTimeSeriesClimateCorrelation* DeriveCorrelation(const IGeoTimeSeries* geoTimeSeries) const override
 		{
 			const auto* gts = (const GeoTimeSeries*)geoTimeSeries;
-
 			const auto& station = FindNearestStation(gts->longitude, gts->latitude);
 
 			const u32 numDimensions = gts->numDimensions;
