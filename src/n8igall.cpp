@@ -19,9 +19,11 @@ namespace n8igall
 {
 	struct Sample : public ISample
 	{
-	private:
+	protected:
 		u32 numDimensions;
 		double* values;
+
+		friend struct GeoClimateCorrelator;
 
 	public:
 		Sample(u32 numDimensions)
@@ -49,12 +51,14 @@ namespace n8igall
 
 	struct GeoTimeSeries : public IGeoTimeSeries
 	{
-	private:
+	protected:
 		double longitude;
 		double latitude;
 		u32 numDimensions;
 
 		map<day_point, const Sample*> timeSeries;
+
+		friend struct GeoClimateCorrelator;
 
 	public:
 
@@ -92,6 +96,20 @@ namespace n8igall
 	private:
 		DWD_CDC dwd_CDC;
 
+		const DWD_CDC::Station& FindNearestStation(double lon, double lat) const
+		{
+			const auto& nearestStation = dwd_CDC.GetStation(0);
+
+			for (size s = 0; s < dwd_CDC.GetNumStations(); s++)
+			{
+				const auto& station = dwd_CDC.GetStation(s);
+
+				// TODO: check distance
+			}
+
+			return nearestStation;
+		}
+
 	public:
 		GeoClimateCorrelator()
 		{
@@ -99,6 +117,25 @@ namespace n8igall
 
 		virtual IGeoTimeSeriesClimateCorrelation* DeriveCorrelation(const IGeoTimeSeries* geoTimeSeries) const override
 		{
+			const auto* gts = (const GeoTimeSeries*)geoTimeSeries;
+
+			const auto& station = FindNearestStation(gts->longitude, gts->latitude);
+
+			const u32 numDimensions = gts->numDimensions;
+
+			for (const auto& timeSample : gts->timeSeries)
+			{
+				const auto date = timeSample.first;
+				const auto sample = timeSample.second;
+
+				// TODO: collect all needed samples around date and feed them into FANN
+				auto stationSample = station.samples.find(date);
+				if (stationSample != station.samples.end())
+				{
+					//sample->values
+				}
+			}
+
 			return NULL;
 		}
 
