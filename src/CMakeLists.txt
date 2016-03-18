@@ -1,4 +1,4 @@
-project (n8tigall)
+project (n8igall)
 file(GLOB_RECURSE SOURCES *.cpp *.cc *.h *.hpp *.c)
 SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/unzip.c)
 SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/ioapi.c)
@@ -19,7 +19,7 @@ foreach(f ${SOURCES})
 endforeach()
 
 add_library (
-   n8tigall
+   n8igall SHARED
 #   WIN32 # Only if you don't want the DOS prompt to appear in the background in Windows
 #   MACOSX_BUNDLE
    ${SOURCES} # We could've listed the source files here directly instead of using a variable to store them

@@ -33,13 +33,16 @@ include_directories(
 	${CMAKE_BINARY_DIR}/3rdparty/zlib
 	${CMAKE_SOURCE_DIR}/3rdparty/fast-cpp-csv-parser
 	${CMAKE_SOURCE_DIR}/3rdparty/date
+	${CMAKE_SOURCE_DIR}/3rdparty/fann/src/include
 )
 
 
 add_subdirectory(3rdparty/zlib EXCLUDE_FROM_ALL)
+add_subdirectory(3rdparty/fann EXCLUDE_FROM_ALL)
 
 set  (THIRDPARTY
-		zlib)
+		zlib
+		doublefann)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 

@@ -8,6 +8,8 @@
 #include <cassert>
 #include <unzip.h>
 #include <sstream>
+#include <doublefann.h>
+#include <fann_cpp.h>
 
 #include "n8igall.h"
 #include "utils/DWD_CDC.h"

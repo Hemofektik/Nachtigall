@@ -3,7 +3,7 @@
 
 using namespace std;
 
-namespace n8tigall
+namespace n8igall
 {
 
 }

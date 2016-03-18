@@ -28,3 +28,9 @@ namespace n8igall
 
 	typedef date::day_point dayPoint;
 }
+
+#ifdef WIN32
+#define N8EXPORT __declspec(dllexport)
+#else
+#define N8EXPORT 
+#endif

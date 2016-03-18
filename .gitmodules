@@ -7,3 +7,6 @@
 [submodule "3rdparty/date"]
 	path = 3rdparty/date
 	url = https://github.com/HowardHinnant/date.git
+[submodule "3rdparty/fann"]
+	path = 3rdparty/fann
+	url = https://github.com/libfann/fann.git

@@ -9,7 +9,7 @@ namespace n8igall
 		virtual ~ISample() {};
 		virtual void SetValue(double value, u32 dimension = 0) = 0;
 
-		static ISample* Create(u32 numDimensions = 1);
+		N8EXPORT static ISample* Create(u32 numDimensions = 1);
 	};
 
 	struct IGeoTimeSeries
@@ -20,7 +20,7 @@ namespace n8igall
 		// The sample's ownership is transferred to the GeoTimeSeries.
 		virtual void AddTimeSample(dayPoint dayPoint, const ISample* sample) = 0;
 
-		static IGeoTimeSeries* Create(double longitude, double latitude, u32 numDimensions = 1);
+		N8EXPORT static IGeoTimeSeries* Create(double longitude, double latitude, u32 numDimensions = 1);
 	};
 
 	struct IGeoTimeSeriesClimateCorrelation
@@ -33,6 +33,6 @@ namespace n8igall
 		virtual ~IGeoClimateCorrelator() {};
 		virtual IGeoTimeSeriesClimateCorrelation* DeriveCorrelation(const IGeoTimeSeries* geoTimeSeries) const = 0;
 
-		static IGeoClimateCorrelator* Create();
+		N8EXPORT static IGeoClimateCorrelator* Create();
 	};
 }
