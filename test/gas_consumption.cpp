@@ -33,7 +33,6 @@ int main(int argc, const char* argv[])
 			ss >> std::get_time(&tm, "%Y-%m-%d");
 			const auto timePoint = std::chrono::system_clock::from_time_t(std::mktime(&tm));
 			const auto dayPoint = round<days>(timePoint);
-			//auto date = year_month_day();
 
 			auto sample = ISample::Create();
 			sample->SetValue(consumptionRate);
