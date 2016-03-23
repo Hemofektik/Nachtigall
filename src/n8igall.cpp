@@ -224,8 +224,11 @@ namespace n8igall
 
 			cout << "initial outputs: " << nn.get_num_output() << endl;
 
+			nn.set_activation_function_layer(FANN::LINEAR, 1);
+			nn.set_activation_function_layer(FANN::LINEAR, 2);
+
 			const float desired_error = 0.001f;
-			nn.train_on_data(trainingData, 50, 1, desired_error);
+			nn.train_on_data(trainingData, 500, 100, desired_error);
 
 			unsigned int newlayers[3];
 			nn.get_layer_array(newlayers);
