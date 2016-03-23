@@ -9,6 +9,7 @@
 #include <cassert>
 #include <unzip.h>
 #include <sstream>
+#include <algorithm>
 #include <doublefann.h>
 #include <fann_cpp.h>
 #include <proj_api.h>
@@ -60,7 +61,7 @@ namespace n8igall
 		double latitude;
 		u32 numDimensions;
 
-		map<day_point, const Sample*> timeSeries;
+		map<dayPoint, const Sample*> timeSeries;
 
 		friend struct GeoClimateCorrelator;
 
@@ -138,37 +139,77 @@ namespace n8igall
 			return dwd_CDC.GetStation(nearestStationIndex);
 		}
 
-		void FillFANNTrainingData(const GeoTimeSeries* gts, dayPoint start, dayPoint end, const DWD_CDC::Station& station, FANN::training_data& trainingData) const
+		void FillFANNTrainingData(const GeoTimeSeries* gts, dayPoint startInclusive, dayPoint endExclusive, const DWD_CDC::Station& station, FANN::training_data& trainingData) const
 		{
-			/*
-			const u32 numDimensions = gts->numDimensions;
-			for (const auto& timeSample : gts->timeSeries)
-			{
-				const auto date = timeSample.first;
-				const auto sample = timeSample.second;
+			const u32 numInputParams = 9;
+			const u32 numInputDays = 7;
+			const s32 numInputDayOffset = -4;
+			const u32 numInputNodes = numInputDays * numInputParams;
+			const u32 numOutputNodes = gts->numDimensions;
+			const double MissingValue = -999.0;
 
-				// TODO: collect all needed samples around date and feed them into FANN
-				auto stationSample = station.samples.find(date);
-				if (stationSample != station.samples.end())
+			vector<double*> input;
+			vector<double*> output;
+			for (dayPoint day = startInclusive; day < endExclusive; day += days(1))
+			{
+				double* inputData = NULL;		// weather data of surrounding days for "day"
+				const Sample* sample = NULL;	// output sample for "day"
+
+				auto isDayValid = [&]
 				{
-					//sample->values
+					const auto sampleIt = gts->timeSeries.find(day);
+					if (sampleIt == gts->timeSeries.end()) return false;
+
+					inputData = new double[numInputNodes];
+					double* i = inputData;
+
+					for (u32 d = 0; d < numInputDays; d++)
+					{
+						dayPoint inputDay = day + days(numInputDayOffset + d);
+
+						const auto stationSampleIt = station.samples.find(inputDay);
+						if (stationSampleIt == station.samples.end()) return false;
+
+						const auto& stationSample = stationSampleIt->second;
+
+						i[0] = stationSample.BEDECKUNGSGRAD;
+						i[1] = stationSample.SONNENSCHEINDAUER;
+						i[2] = stationSample.LUFTTEMPERATUR_MAXIMUM;
+						i[3] = stationSample.LUFTTEMPERATUR_MINIMUM;
+						i[4] = stationSample.NIEDERSCHLAGSHOEHE;
+						i[5] = stationSample.SCHNEEHOEHE;
+						i[6] = stationSample.REL_FEUCHTE;
+						i[7] = stationSample.WINDGESCHWINDIGKEIT;
+						i[8] = stationSample.WINDSPITZE_MAXIMUM;
+						i += numInputParams;
+					}
+
+					// check if any of the inputData values is missing
+					for (u32 n = 0; n < numInputNodes; n++)
+					{
+						if (inputData[n] == MissingValue) return false;
+					}
+
+					sample = sampleIt->second;
+					return true;
+				};
+
+				if (!isDayValid())
+				{
+					delete[] inputData;
+					continue;
 				}
+
+				input.push_back(inputData);
+				output.push_back(sample->values);
 			}
 
+			trainingData.set_train_data((unsigned int)input.size(), numInputNodes, input.data(), numOutputNodes, output.data());
 
-			const uint32_t numInputNodes = input[0].width * input[0].height;
-			const uint32_t numOutputNodes = output[0].width * output[0].height;
-
-			double** inputTrainData = new double*[input.size()];
-			double** outputTrainData = new double*[output.size()];
-			for (size_t n = 0; n < input.size(); n++)
+			for (auto i : input)
 			{
-				inputTrainData[n] = input[n].data;
-				outputTrainData[n] = output[n].data;
+				delete[] i;
 			}
-			trainingData.set_train_data((int)input.size(), numInputNodes, inputTrainData, numOutputNodes, outputTrainData);
-			delete[] inputTrainData;
-			delete[] outputTrainData;*/
 		}
 
 		void TrainAndTestFANN(FANN::training_data& trainingData, FANN::training_data& testData) const
@@ -177,14 +218,14 @@ namespace n8igall
 
 			const unsigned int numInputNodes = trainingData.num_input_train_data();
 			const unsigned int numOutputNodes = trainingData.num_output_train_data();
-			const unsigned int numHiddenNodes = numOutputNodes * 100;
+			const unsigned int numHiddenNodes = min(trainingData.num_input_train_data() / 2, numOutputNodes * 100);
 
-			FANN::neural_net nn(FANN_NETTYPE_LAYER, 3, numInputNodes, numOutputNodes, numHiddenNodes);
+			FANN::neural_net nn(FANN_NETTYPE_LAYER, 3, numInputNodes, numHiddenNodes, numOutputNodes);
 
 			cout << "initial outputs: " << nn.get_num_output() << endl;
 
 			const float desired_error = 0.001f;
-			nn.train_on_data(trainingData, 5000, 1, desired_error);
+			nn.train_on_data(trainingData, 50, 1, desired_error);
 
 			unsigned int newlayers[3];
 			nn.get_layer_array(newlayers);
@@ -197,6 +238,7 @@ namespace n8igall
 			float mse = nn.test_data(testData);
 
 			cout << "mse: " << mse << endl;
+			cout << "me: " << sqrt(mse) << endl;
 		}
 
 	public:
@@ -216,7 +258,7 @@ namespace n8igall
 			FillFANNTrainingData(gts, gts->timeSeries.begin()->first, trainTestDataSplitDay, station, trainingData);
 
 			FANN::training_data testData;
-			FillFANNTrainingData(gts, trainTestDataSplitDay, gts->timeSeries.rbegin()->first, station, testData);
+			FillFANNTrainingData(gts, trainTestDataSplitDay, gts->timeSeries.rbegin()->first + days(1), station, testData);
 
 			TrainAndTestFANN(trainingData, testData);
 
