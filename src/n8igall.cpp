@@ -228,7 +228,7 @@ namespace n8igall
 			nn.set_activation_function_layer(FANN::LINEAR, 2);
 
 			const float desired_error = 0.001f;
-			nn.train_on_data(trainingData, 500, 100, desired_error);
+			nn.train_on_data(trainingData, 5000, 1000, desired_error);
 
 			unsigned int newlayers[3];
 			nn.get_layer_array(newlayers);
@@ -237,9 +237,17 @@ namespace n8igall
 			cout << "num neurons in hidden layer: " << newlayers[1] << endl;
 			cout << "final outputs: " << nn.get_num_output() << endl;
 
+
+			for (u32 td = 0; td < testData.length_train_data(); td++)
+			{
+				double* ref_out = testData.get_train_output(td);
+				double* nn_out = nn.run(testData.get_train_input(td));
+
+				cout << "ref: " << *ref_out << "   prog: " << *nn_out << endl;
+			}
+
 			nn.reset_MSE();
 			float mse = nn.test_data(testData);
-
 			cout << "mse: " << mse << endl;
 			cout << "me: " << sqrt(mse) << endl;
 		}
@@ -255,7 +263,7 @@ namespace n8igall
 			const auto* gts = (const GeoTimeSeries*)geoTimeSeries;
 			const auto& station = FindNearestStation(gts->longitude, gts->latitude);
 
-			dayPoint trainTestDataSplitDay = day_point(year(2012) / month(12) / day(31)); // TODO: this should come from outside (libconfig?)
+			dayPoint trainTestDataSplitDay = day_point(year(2014) / month(12) / day(31)); // TODO: this should come from outside (libconfig?)
 
 			FANN::training_data trainingData;
 			FillFANNTrainingData(gts, gts->timeSeries.begin()->first, trainTestDataSplitDay, station, trainingData);
