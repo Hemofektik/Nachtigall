@@ -66,6 +66,27 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/mo
 * **Next inputs** (per research doc §4.4): ICON-D2 wind fields + derived
   orographic upslope/convergence features.
 
+## Results (first experiments)
+
+33 days of RADKLIM data (2025-04-01 → 2025-05-03), 763 samples, chronological
+80/20 split (152 validation samples), 15 epochs, best epoch by CSI@1.0:
+
+| Config | CSI@0.1 | CSI@1.0 | CSI@5.0 | persistence CSI@1.0 |
+|---|---|---|---|---|
+| radar-only (seed 0) | 0.033 | 0.297 | 0.126 | 0.010 |
+| radar-only (seed 1) | 0.152 | 0.304 | 0.121 | 0.010 |
+| +elevation (seed 0) | 0.042 | 0.154 | 0.077 | 0.010 |
+| +elevation (seed 1) | 0.039 | 0.304 | 0.133 | 0.010 |
+
+Takeaways:
+
+* The U-Net beats persistence ~30× at ≥1 mm/h — the regime that matters.
+* Elevation channels are **neutral so far**: seed 1 ties radar-only exactly,
+  seed 0 was an outlier. Run-to-run spread (0.15–0.30) exceeds any elevation
+  effect at this dataset size; a verdict needs more data and more seeds.
+* CSI@0.1 (drizzle) is unstable and mostly below persistence — the model is
+  conservative on light rain; tune the loss weighting or add a focal term.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
