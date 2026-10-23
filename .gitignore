@@ -236,3 +236,7 @@ _Pvt_Extensions
 .fake/
 
 build/
+# MVP data and training artifacts
+mvp/data/
+mvp/runs/
+__pycache__/
