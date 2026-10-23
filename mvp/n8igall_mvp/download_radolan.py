@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
@@ -38,19 +39,35 @@ RW_MONTHLY = (BASE + "/climate_environment/CDC/grids_germany/hourly/radolan/"
 RECENT_WINDOW_DAYS = 14
 
 
-def _fetch(url: str, dest: Path) -> bool:
+def _fetch(url: str, dest: Path, retries: int = 3) -> bool:
     if dest.exists() and dest.stat().st_size > 0:
         return True
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with urllib.request.urlopen(url, timeout=300) as resp, open(dest, "wb") as out:
-            out.write(resp.read())
-        return True
-    except (urllib.error.HTTPError, urllib.error.URLError) as e:
-        print(f"  miss {url}: {e}", file=sys.stderr)
-        if dest.exists():
-            dest.unlink()
-        return False
+    part = dest.with_name(dest.name + ".part")
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp, \
+                    open(part, "wb") as out:
+                while True:  # stream to disk; catches stalls mid-transfer
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            if part.stat().st_size == 0:
+                raise OSError("empty response")
+            part.replace(dest)  # atomic: partial downloads never look complete
+            return True
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                print(f"  miss {url}", file=sys.stderr)
+                part.unlink(missing_ok=True)
+                return False
+            time.sleep(5 * (attempt + 1))
+        except (OSError, TimeoutError) as e:  # stalls, resets, disk errors
+            print(f"  retry {url}: {e}", file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
+    part.unlink(missing_ok=True)
+    return False
 
 
 def _member_ts(name: str) -> str | None:
