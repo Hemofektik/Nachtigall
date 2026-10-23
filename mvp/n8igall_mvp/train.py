@@ -26,16 +26,18 @@ from .model import UNet, csi, weighted_mse_loss
 
 class RadolanDataset(Dataset):
     def __init__(self, samples: list[Sample], crop: int | None = 512,
-                 static_channels: np.ndarray | None = None):
+                 static_channels: np.ndarray | None = None,
+                 wind_sampler=None):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
+        self.wind = wind_sampler       # WindSampler or None
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
-        x, y, mask = load_sample(self.samples[idx])
+        x, y, mask = load_sample(self.samples[idx], wind_sampler=self.wind)
         if self.static is not None:
             x = np.concatenate([x, self.static], axis=0)
         if self.crop:
@@ -93,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-channels", type=int, default=32)
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
+    p.add_argument("--wind", type=Path, default=None,
+                   help=".npz wind store (era5_wind.npz) to add wind channels")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args(argv)
@@ -111,15 +115,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.static:
         static = np.load(args.static)["channels"].astype(np.float32)
 
-    train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static)
-    val_ds = RadolanDataset(val_s, crop=None, static_channels=static)
+    wind_sampler = None
+    if args.wind:
+        from .wind import WindSampler
+        elevation = (np.load(args.static)["elevation"] if args.static else None)
+        wind_sampler = WindSampler(args.wind, elevation=elevation)
+
+    train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static,
+                              wind_sampler=wind_sampler)
+    val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
+                            wind_sampler=wind_sampler)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, drop_last=True,
                           persistent_workers=args.num_workers > 0)
     val_dl = DataLoader(val_ds, batch_size=1, shuffle=False,
                         num_workers=args.num_workers)
 
-    in_channels = len(train_s[0].inputs) + (0 if static is None else static.shape[0])
+    from .wind import N_CHANNELS as WIND_CHANNELS
+    in_channels = (len(train_s[0].inputs)
+                   + (0 if static is None else static.shape[0])
+                   + (0 if wind_sampler is None else WIND_CHANNELS))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UNet(in_channels, base=args.base_channels).to(device)
     n_params = sum(p.numel() for p in model.parameters())

@@ -60,17 +60,25 @@ def build_index(yw_dir: Path, rw_dir: Path, start: datetime, end: datetime,
     return samples
 
 
-def load_sample(sample: Sample) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_sample(sample: Sample,
+                wind_sampler=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load one sample.
 
     Returns:
-        x: float32 [n_history, H, W] log1p rates, invalid pixels = 0
+        x: float32 [C, H, W] log1p radar history (+ optional wind channels),
+           invalid pixels = 0
         y: float32 [1, H, W] target rate (mm/h), invalid pixels = 0
         mask: bool [1, H, W] target validity mask
     """
     frames = [read_frame(p) for p in sample.inputs]
     x = np.stack([np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0)
                   for f in frames]).astype(np.float32)
+
+    if wind_sampler is not None:
+        # Wind valid over the lead-time window, anchored at the last input
+        # frame ("now"); channels are appended after the radar history.
+        t_now = datetime.strptime(frames[-1].timestamp, "%y%m%d%H%M")
+        x = np.concatenate([x, wind_sampler.channels_for(t_now)], axis=0)
 
     tgt = read_frame(sample.target)
     y = np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0)[None].astype(np.float32)
