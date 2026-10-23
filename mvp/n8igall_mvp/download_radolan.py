@@ -164,11 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dest", type=Path,
                    default=Path(__file__).resolve().parent.parent / "data" / "raw")
     p.add_argument("--minutes", default="00,30",
-                   help="YW minute marks to extract (comma separated)")
+                   help="YW minute marks to extract (comma separated, or 'all')")
     args = p.parse_args(argv)
 
     dest = args.dest / args.product
-    minutes = set(args.minutes.split(","))
+    if args.minutes == "all":
+        minutes = {f"{m:02d}" for m in range(0, 60, 5)}
+    else:
+        minutes = set(args.minutes.split(","))
     total = 0
     for (year, month), days in _month_days(args.start, args.end).items():
         month_total = 0
