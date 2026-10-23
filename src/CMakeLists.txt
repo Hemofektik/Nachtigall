@@ -2,7 +2,9 @@ project (n8igall)
 file(GLOB_RECURSE SOURCES *.cpp *.cc *.h *.hpp *.c)
 SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/unzip.c)
 SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/ioapi.c)
-SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/iowin32.c)
+IF(WIN32)
+    SET(SOURCES ${SOURCES} ${CMAKE_SOURCE_DIR}/3rdparty/zlib/contrib/minizip/iowin32.c)
+ENDIF()
 
 foreach(f ${SOURCES})
     # Get the path of the file relative to ${DIRECTORY},
