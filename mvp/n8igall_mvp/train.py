@@ -48,7 +48,14 @@ class RadolanDataset(Dataset):
         return (torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(mask))
 
 
-def evaluate(model, loader, device, thresholds=(0.1, 1.0, 5.0)) -> dict:
+def evaluate(model, loader, device, radar_channels: int,
+             thresholds=(0.1, 1.0, 5.0)) -> dict:
+    """Evaluate CSI vs a persistence baseline.
+
+    ``radar_channels`` is the number of leading radar-history channels in the
+    input tensor; persistence uses the most recent radar frame (not any static
+    channels that may follow it).
+    """
     model.eval()
     csi_model = {t: [] for t in thresholds}
     csi_pers = {t: [] for t in thresholds}
@@ -61,7 +68,8 @@ def evaluate(model, loader, device, thresholds=(0.1, 1.0, 5.0)) -> dict:
             n += y.shape[0]
             pred_rate = torch.expm1(pred.clamp(min=0))
             y_rate = torch.expm1(y)
-            pers_rate = torch.expm1(x[:, -1:])  # last radar frame = nowcast
+            last_radar = x[:, radar_channels - 1: radar_channels]
+            pers_rate = torch.expm1(last_radar)
             for t in thresholds:
                 csi_model[t].append(csi(pred_rate, y_rate, mask, t))
                 csi_pers[t].append(csi(pers_rate, y_rate, mask, t))
@@ -137,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  ep{epoch} it{i} loss={loss.item():.4f}")
         sched.step()
 
-        val = evaluate(model, val_dl, device)
+        val = evaluate(model, val_dl, device, radar_channels=len(train_s[0].inputs))
         line = (f"ep{epoch} train_loss={running/max(1,len(train_dl)):.4f} "
                 f"({time.time()-t0:.0f}s) val_loss={val['loss']:.4f} "
                 + " ".join(f"CSI@{t}={val[f'csi_{t}']:.3f}"
