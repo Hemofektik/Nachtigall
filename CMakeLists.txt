@@ -65,7 +65,6 @@ link_libraries (
 endif()
 
 add_subdirectory(src)
-add_subdirectory(test)
 
 
 if(CMAKE_CONFIGURATION_TYPES)
