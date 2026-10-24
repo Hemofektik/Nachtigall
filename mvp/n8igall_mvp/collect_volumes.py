@@ -27,6 +27,7 @@ import shutil
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -43,11 +44,12 @@ FILE_RE = re.compile(r"ras07-stqual-vol5minng01_sweeph5onem_dbzh_(\d{2})-"
 
 def _get(url: str, dest: Path) -> bool:
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         with urllib.request.urlopen(url, timeout=60) as resp, \
                 open(dest, "wb") as out:
             out.write(resp.read())
         return True
-    except (urllib.error.HTTPError, urllib.error.URLError):
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError):
         dest.unlink(missing_ok=True)
         return False
 
@@ -70,47 +72,54 @@ def collect_once(root: Path, retention_days: int,
                  bootstrap_hours: int = 6) -> int:
     """One polling cycle; returns number of files stored.
 
-    Only volumes newer than the newest already-stored volume per site are
-    downloaded, so an hourly cycle transfers just the new data. On the first
-    cycle (empty store) only the trailing ``bootstrap_hours`` are fetched
-    instead of backfilling the whole ~40-day server window.
+    Only volumes newer than the newest *complete* volume per site are
+    downloaded, so an hourly cycle transfers just the new data; partially
+    fetched volumes are completed rather than skipped. On the first cycle
+    (empty store) only the trailing ``bootstrap_hours`` are fetched instead
+    of backfilling the whole ~40-day server window. Downloads run in a
+    small thread pool - per-file latency on opendata.dwd.de dominates.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) \
         - timedelta(minutes=COMPLETE_LAG_MIN)
     stored = 0
-    for site in SITES:
-        site_dir = root / site
-        newest = None
-        if site_dir.is_dir():
-            stamps = []
-            for vol_dir in site_dir.iterdir():
-                try:
-                    stamps.append(datetime.strptime(vol_dir.name, "%Y%m%d%H%M%S%f"))
-                except ValueError:
-                    pass
-            newest = max(stamps) if stamps else None
-        if newest is None:
-            newest = cutoff - timedelta(hours=bootstrap_hours)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = []
+        for site in SITES:
+            site_dir = root / site
+            complete: list[datetime] = []
+            partial: list[str] = []
+            if site_dir.is_dir():
+                for vol_dir in site_dir.iterdir():
+                    try:
+                        t = datetime.strptime(vol_dir.name, "%Y%m%d%H%M%S%f")
+                    except ValueError:
+                        continue
+                    if len(list(vol_dir.glob("sweep_*.hd5"))) >= len(SWEEPS):
+                        complete.append(t)
+                    else:
+                        partial.append(vol_dir.name)
+            newest = max(complete) if complete else \
+                cutoff - timedelta(hours=bootstrap_hours)
 
-        volumes = list_volumes(site)
-        for ts, sweeps in volumes.items():
-            try:
-                t = datetime.strptime(ts, "%Y%m%d%H%M%S%f")
-            except ValueError:
-                continue
-            if t > cutoff or t <= newest:
-                continue  # incomplete or already collected
-            dest = site_dir / ts
-            for sweep in sorted(set(sweeps) & {f"{i:02d}" for i in SWEEPS}):
-                target = dest / f"sweep_{sweep}.hd5"
-                if target.exists():
+            volumes = list_volumes(site)
+            for ts, sweeps in volumes.items():
+                try:
+                    t = datetime.strptime(ts, "%Y%m%d%H%M%S%f")
+                except ValueError:
                     continue
-                url = (f"{BASE}/{site}/hdf5/filter_simple/"
-                       f"ras07-stqual-vol5minng01_sweeph5onem_dbzh_{sweep}-"
-                       f"{ts}-{site}-{_site_id(site)}-hd5")
-                dest.mkdir(parents=True, exist_ok=True)
-                if _get(url, target):
-                    stored += 1
+                if t > cutoff:
+                    continue  # volume not complete yet
+                if t <= newest and ts not in partial:
+                    continue  # already collected
+                for sweep in sorted(set(sweeps) & {f"{i:02d}" for i in SWEEPS}):
+                    target = root / site / ts / f"sweep_{sweep}.hd5"
+                    if target.exists():
+                        continue
+                    url = (f"{BASE}/{site}/hdf5/filter_simple/"
+                           f"ras07-stqual-vol5minng01_sweeph5onem_dbzh_{sweep}-"
+                           f"{ts}-{site}-{_site_id(site)}-hd5")
+                    futures.append(pool.submit(_get, url, target))
+        stored = sum(1 for f in futures if f.result())
     return stored
 
 
