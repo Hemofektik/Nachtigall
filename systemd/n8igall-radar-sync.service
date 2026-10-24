@@ -1,0 +1,13 @@
+[Unit]
+Description=Nachtigall radar data sync (hourly DWD RADOLAN download + 3D volume collection)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rsc/dev/Nachtigall/mvp
+ExecStart=/usr/bin/python3 -m n8igall_mvp.radar_sync
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

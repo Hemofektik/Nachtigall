@@ -66,21 +66,41 @@ def list_volumes(site: str) -> dict[str, list[str]]:
     return out
 
 
-def collect_once(root: Path, retention_days: int) -> int:
-    """One polling cycle; returns number of files stored."""
+def collect_once(root: Path, retention_days: int,
+                 bootstrap_hours: int = 6) -> int:
+    """One polling cycle; returns number of files stored.
+
+    Only volumes newer than the newest already-stored volume per site are
+    downloaded, so an hourly cycle transfers just the new data. On the first
+    cycle (empty store) only the trailing ``bootstrap_hours`` are fetched
+    instead of backfilling the whole ~40-day server window.
+    """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) \
         - timedelta(minutes=COMPLETE_LAG_MIN)
     stored = 0
     for site in SITES:
+        site_dir = root / site
+        newest = None
+        if site_dir.is_dir():
+            stamps = []
+            for vol_dir in site_dir.iterdir():
+                try:
+                    stamps.append(datetime.strptime(vol_dir.name, "%Y%m%d%H%M%S%f"))
+                except ValueError:
+                    pass
+            newest = max(stamps) if stamps else None
+        if newest is None:
+            newest = cutoff - timedelta(hours=bootstrap_hours)
+
         volumes = list_volumes(site)
         for ts, sweeps in volumes.items():
             try:
                 t = datetime.strptime(ts, "%Y%m%d%H%M%S%f")
             except ValueError:
                 continue
-            if t > cutoff:
-                continue  # volume not complete yet
-            dest = root / site / ts
+            if t > cutoff or t <= newest:
+                continue  # incomplete or already collected
+            dest = site_dir / ts
             for sweep in sorted(set(sweeps) & {f"{i:02d}" for i in SWEEPS}):
                 target = dest / f"sweep_{sweep}.hd5"
                 if target.exists():
