@@ -78,6 +78,12 @@ def _member_ts(name: str) -> str | None:
     return parts[2]
 
 
+def day_dir(dest: Path, yymmdd: str) -> Path:
+    """Per-day subdirectory (FAT32 limits a directory to ~65k entries;
+    288 YW frames/day fit comfortably)."""
+    return dest / yymmdd[:6]
+
+
 def _extract(tar_path: Path, dest: Path, wanted: set[str],
              depth: int = 0) -> int:
     """Extract RADOLAN members whose YYMMDDHHMM timestamp is in ``wanted``.
@@ -105,12 +111,13 @@ def _extract(tar_path: Path, dest: Path, wanted: set[str],
             ts = _member_ts(name)
             if ts is None or ts not in wanted:
                 continue
-            target = dest / name.replace("yw2017.002_", "yw_")
+            target = day_dir(dest, ts) / name.replace("yw2017.002_", "yw_")
             if target.exists():
                 continue
             src = tf.extractfile(member)
             if src is None:
                 continue
+            target.parent.mkdir(parents=True, exist_ok=True)
             with open(target, "wb") as out:
                 out.write(src.read())
             n += 1
@@ -147,7 +154,8 @@ def download_rw(day: date, dest: Path) -> int:
         n = 0
         for hour in range(24):
             name = f"raa01-rw_10000-{day:%y%m%d}{hour:02d}00-dwd---bin.gz"
-            if _fetch(RW_FLAT + name, dest / name):
+            target = day_dir(dest, day.strftime("%y%m%d")) / name
+            if _fetch(RW_FLAT + name, target):
                 n += 1
         return n
 

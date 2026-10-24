@@ -81,7 +81,12 @@ def sync_realtime(dest: Path, window_hours: int = RT_WINDOW_HOURS) -> int:
 
 
 def _count(day: date, directory: Path, pattern: str) -> int:
-    return len(list(directory.glob(pattern.format(day=day.strftime("%y%m%d")))))
+    """Count a day's files in the per-day subdir and the legacy flat dir."""
+    stamp = day.strftime("%y%m%d")
+    n = len(list((directory / stamp).glob(pattern.format(day=stamp)))) \
+        if (directory / stamp).is_dir() else 0
+    n += len(list(directory.glob(pattern.format(day=stamp))))
+    return n
 
 
 def sync(dest: Path, window_days: int) -> tuple[int, int]:

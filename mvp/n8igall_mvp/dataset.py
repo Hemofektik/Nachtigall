@@ -37,16 +37,21 @@ class Sample:
 
 
 def _yw_path(yw_dir: Path, t: datetime) -> Path:
-    return yw_dir / f"raa01-yw_10000-{t.strftime('%y%m%d%H%M')}-dwd---bin"
+    name = f"raa01-yw_10000-{t.strftime('%y%m%d%H%M')}-dwd---bin"
+    flat = yw_dir / name
+    if flat.exists():
+        return flat
+    return yw_dir / t.strftime("%y%m%d") / name
 
 
 def _rw_path(rw_dir: Path, t: datetime) -> Path:
     """RW target path; historical months extract uncompressed (no .gz)."""
     stem = f"raa01-rw_10000-{t.strftime('%y%m%d%H%M')}-dwd---bin"
-    gz = rw_dir / f"{stem}.gz"
-    if gz.exists():
-        return gz
-    return rw_dir / stem
+    for base in (rw_dir / t.strftime("%y%m%d"), rw_dir):  # per-day, then flat
+        for candidate in (base / f"{stem}.gz", base / stem):
+            if candidate.exists():
+                return candidate
+    return rw_dir / t.strftime("%y%m%d") / f"{stem}.gz"
 
 
 def build_index(yw_dir: Path, rw_dir: Path, start: datetime, end: datetime,
