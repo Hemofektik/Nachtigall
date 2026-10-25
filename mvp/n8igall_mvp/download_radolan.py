@@ -46,15 +46,19 @@ def _fetch(url: str, dest: Path, retries: int = 3) -> bool:
     part = dest.with_name(dest.name + ".part")
     for attempt in range(retries):
         try:
-            with urllib.request.urlopen(url, timeout=120) as resp, \
-                    open(part, "wb") as out:
-                while True:  # stream to disk; catches stalls mid-transfer
-                    chunk = resp.read(1 << 20)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-            if part.stat().st_size == 0:
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                expected = resp.headers.get("Content-Length")
+                with open(part, "wb") as out:
+                    while True:  # stream to disk; catches stalls mid-transfer
+                        chunk = resp.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+            size = part.stat().st_size
+            if size == 0:
                 raise OSError("empty response")
+            if expected is not None and size != int(expected):
+                raise OSError(f"truncated: {size} of {expected} bytes")
             part.replace(dest)  # atomic: partial downloads never look complete
             return True
         except (urllib.error.HTTPError, urllib.error.URLError) as e:
