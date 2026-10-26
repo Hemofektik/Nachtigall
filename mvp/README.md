@@ -66,10 +66,26 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/mo
 * **Next inputs** (per research doc §4.4): ICON-D2 wind fields + derived
   orographic upslope/convergence features.
 
-## Results (first experiments)
+## Results
 
-33 days of RADKLIM data (2025-04-01 → 2025-05-03), 763 samples, chronological
-80/20 split (152 validation samples), 15 epochs, best epoch by CSI@1.0:
+### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
+
+Same period, same seed (0), same 80/20 chronological split, same 10 epochs,
+same channels (radar + elevation/slope/aspect + ERA5 wind incl. upslope and
+divergence). Only the input spacing differs; both windows span 90 minutes:
+
+| Config | Input | Channels | CSI@0.1 | **CSI@1.0** | CSI@5.0 | persistence CSI@1.0 |
+|---|---|---|---|---|---|---|
+| A: 30-min spacing | 4 frames | 14 | 0.137 | 0.101 | 0.000 | 0.001 |
+| **B: 5-min spacing** | 19 frames | 29 | 0.142 | **0.121** | 0.002 | 0.001 |
+
+**Verdict: 5-min spacing wins** — +20% relative CSI@1.0 (0.121 vs 0.101),
+consistent with the aliasing argument (30-min steps move convective cells
+20–30 km on a 1 km grid; 5-min steps keep displacement at 3.5–5 km). Both
+configs beat persistence ~100× at ≥1 mm/h. Caveats: single seed, best-epoch
+selection; a multi-seed run would confirm the margin.
+
+### Earlier experiments (Apr–May 2025, radar-only, 763 samples)
 
 | Config | CSI@0.1 | CSI@1.0 | CSI@5.0 | persistence CSI@1.0 |
 |---|---|---|---|---|
@@ -80,21 +96,27 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/mo
 
 Takeaways:
 
-* The U-Net beats persistence ~30× at ≥1 mm/h — the regime that matters.
-* Elevation channels are **neutral so far**: seed 1 ties radar-only exactly,
-  seed 0 was an outlier. Run-to-run spread (0.15–0.30) exceeds any elevation
-  effect at this dataset size; a verdict needs more data and more seeds.
-* CSI@0.1 (drizzle) is unstable and mostly below persistence — the model is
-  conservative on light rain; tune the loss weighting or add a focal term.
+* The U-Net beats persistence by 30–100× at ≥1 mm/h — the regime that matters.
+* Elevation channels were **neutral** at that dataset size: seed 1 tied
+  radar-only exactly, seed 0 was an outlier; run-to-run spread (0.15–0.30)
+  exceeded any elevation effect on 33 days of data.
+* CSI@0.1 (drizzle) is unstable — the model is conservative on light rain;
+  tune the loss weighting or add a focal term.
 
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
-- [x] RADKLIM downloader (daily recent tars + monthly reproc tars)
-- [x] Dataset index + lazy loading
+- [x] RADKLIM downloader (daily recent tars + monthly reproc/historical tars,
+      per-day subdirs, truncation detection, corrupt-tar recovery)
+- [x] Dataset index + lazy loading (spacing/history configurable)
 - [x] DEM static channels (Copernicus GLO-90 → RADOLAN grid)
-- [x] U-Net training with persistence baseline
+- [x] ERA5 wind channels (u/v 10 m + 100 m, upslope, divergence) via open-meteo
+- [x] U-Net training with persistence baseline + CSI metrics
 - [x] ONNX export + parity check
-- [ ] NWP wind input channels (ICON-D2)
-- [ ] Larger training set (multi-season) + hyperparameter tuning
+- [x] Hourly sync daemon (systemd user service): RADKLIM gap-fill, real-time
+      HDF5 mirror, 3D volume collection with retention + free-space guard
+- [x] Spacing A/B test: 5-min beats 30-min (+20% CSI@1.0)
+- [ ] Multi-seed confirmation of the A/B margin; loss tuning for drizzle CSI
+- [ ] Remaining wind months (2025-01 → 05) when open-meteo quota allows
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
+- [ ] 3D volume-scan input channels (collector is accumulating data)
