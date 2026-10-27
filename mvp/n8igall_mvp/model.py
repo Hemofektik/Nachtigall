@@ -28,7 +28,8 @@ def _block(cin: int, cout: int) -> nn.Sequential:
 
 
 class UNet(nn.Module):
-    def __init__(self, in_channels: int, base: int = 32, depth: int = 3):
+    def __init__(self, in_channels: int, base: int = 32, depth: int = 3,
+                 out_channels: int = 1):
         super().__init__()
         self.enc = nn.ModuleList()
         self.dec = nn.ModuleList()
@@ -46,7 +47,7 @@ class UNet(nn.Module):
             self.dec.append(nn.ConvTranspose2d(up_in, skip_ch, 2, stride=2))
             self.dec.append(_block(skip_ch * 2, skip_ch))
 
-        self.head = nn.Conv2d(chans[0], 1, 1)
+        self.head = nn.Conv2d(chans[0], out_channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         skips = []

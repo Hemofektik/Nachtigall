@@ -27,17 +27,19 @@ from .model import UNet, csi, weighted_mse_loss
 class RadolanDataset(Dataset):
     def __init__(self, samples: list[Sample], crop: int | None = 512,
                  static_channels: np.ndarray | None = None,
-                 wind_sampler=None):
+                 wind_sampler=None, leads: list[int] | None = None):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
         self.wind = wind_sampler       # WindSampler or None
+        self.leads = leads              # multi-lead target minutes or None
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
-        x, y, mask = load_sample(self.samples[idx], wind_sampler=self.wind)
+        x, y, mask = load_sample(self.samples[idx], wind_sampler=self.wind,
+                                 leads=self.leads)
         if self.static is not None:
             x = np.concatenate([x, self.static], axis=0)
         if self.crop:
@@ -51,16 +53,18 @@ class RadolanDataset(Dataset):
 
 
 def evaluate(model, loader, device, radar_channels: int,
+             leads: list[int] | None = None,
              thresholds=(0.1, 1.0, 5.0)) -> dict:
-    """Evaluate CSI vs a persistence baseline.
+    """Evaluate CSI vs a persistence baseline, per lead time.
 
     ``radar_channels`` is the number of leading radar-history channels in the
     input tensor; persistence uses the most recent radar frame (not any static
     channels that may follow it).
     """
+    leads = leads or [60]
     model.eval()
-    csi_model = {t: [] for t in thresholds}
-    csi_pers = {t: [] for t in thresholds}
+    csi_model = {(L, t): [] for L in leads for t in thresholds}
+    csi_pers = {(L, t): [] for L in leads for t in thresholds}
     loss_sum, n = 0.0, 0
     with torch.no_grad():
         for x, y, mask in loader:
@@ -68,18 +72,27 @@ def evaluate(model, loader, device, radar_channels: int,
             pred = model(x)
             loss_sum += weighted_mse_loss(pred, y, mask).item() * y.shape[0]
             n += y.shape[0]
-            pred_rate = torch.expm1(pred.clamp(min=0))
+            last_radar = torch.expm1(x[:, radar_channels - 1: radar_channels])
             y_rate = torch.expm1(y)
-            last_radar = x[:, radar_channels - 1: radar_channels]
-            pers_rate = torch.expm1(last_radar)
-            for t in thresholds:
-                csi_model[t].append(csi(pred_rate, y_rate, mask, t))
-                csi_pers[t].append(csi(pers_rate, y_rate, mask, t))
+            pred_rate = torch.expm1(pred.clamp(min=0))
+            for i, L in enumerate(leads):
+                for t in thresholds:
+                    csi_model[(L, t)].append(
+                        csi(pred_rate[:, i], y_rate[:, i], mask[:, i], t))
+                    csi_pers[(L, t)].append(
+                        csi(last_radar.expand_as(y_rate[:, i]),
+                            y_rate[:, i], mask[:, i], t))
     out = {"loss": loss_sum / max(n, 1)}
+    for L in leads:
+        for t in thresholds:
+            key = f"csi_lead{L}_{t}"
+            out[key] = float(np.nanmean(csi_model[(L, t)]))
+            out[f"{key}_pers"] = float(np.nanmean(csi_pers[(L, t)]))
+    # Legacy keys point at the primary lead (last entry) for comparability.
+    primary = leads[-1]
     for t in thresholds:
-        key = str(t)
-        out[f"csi_{key}"] = float(np.nanmean(csi_model[t]))
-        out[f"csi_persistence_{key}"] = float(np.nanmean(csi_pers[t]))
+        out[f"csi_{t}"] = out[f"csi_lead{primary}_{t}"]
+        out[f"csi_persistence_{t}"] = out[f"csi_lead{primary}_{t}_pers"]
     return out
 
 
@@ -99,7 +112,12 @@ def main(argv: list[str] | None = None) -> int:
                    help=".npz wind store (era5_wind.npz) to add wind channels")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--leads", default="",
+                   help="comma-separated lead minutes for multi-lead targets "
+                        "(e.g. 5,10,15,20,30,45,60); empty = single RW +60")
     args = p.parse_args(argv)
+
+    leads = [int(v) for v in args.leads.split(",") if v] or None
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -122,9 +140,9 @@ def main(argv: list[str] | None = None) -> int:
         wind_sampler = WindSampler(args.wind, elevation=elevation)
 
     train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static,
-                              wind_sampler=wind_sampler)
+                              wind_sampler=wind_sampler, leads=leads)
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
-                            wind_sampler=wind_sampler)
+                            wind_sampler=wind_sampler, leads=leads)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, drop_last=True,
                           persistent_workers=args.num_workers > 0)
@@ -136,10 +154,13 @@ def main(argv: list[str] | None = None) -> int:
                    + (0 if static is None else static.shape[0])
                    + (0 if wind_sampler is None else WIND_CHANNELS))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(in_channels, base=args.base_channels).to(device)
+    out_channels = len(leads) if leads else 1
+    model = UNet(in_channels, base=args.base_channels,
+                 out_channels=out_channels).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
-          f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels}")
+          f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
+          f"out_ch={out_channels}" + (f" leads={leads}" if leads else ""))
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
@@ -160,23 +181,27 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  ep{epoch} it{i} loss={loss.item():.4f}")
         sched.step()
 
-        val = evaluate(model, val_dl, device, radar_channels=len(train_s[0].inputs))
+        val = evaluate(model, val_dl, device,
+                       radar_channels=len(train_s[0].inputs), leads=leads)
         line = (f"ep{epoch} train_loss={running/max(1,len(train_dl)):.4f} "
                 f"({time.time()-t0:.0f}s) val_loss={val['loss']:.4f} "
                 + " ".join(f"CSI@{t}={val[f'csi_{t}']:.3f}"
                            f"(pers {val[f'csi_persistence_{t}']:.3f})"
                            for t in ("0.1", "1.0", "5.0")))
+        if leads:
+            line += " | " + " ".join(
+                f"L{L}={val[f'csi_lead{L}_1.0']:.3f}" for L in leads)
         print(line)
 
         score = val["csi_1.0"]
         if not np.isnan(score) and score > best:
             best = score
             torch.save({"model": model.state_dict(), "in_channels": in_channels,
-                        "base": args.base_channels, "val": val},
-                       args.out / "best.pt")
+                        "base": args.base_channels, "leads": leads,
+                        "val": val}, args.out / "best.pt")
 
     torch.save({"model": model.state_dict(), "in_channels": in_channels,
-                "base": args.base_channels}, args.out / "last.pt")
+                "base": args.base_channels, "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
     return 0
 

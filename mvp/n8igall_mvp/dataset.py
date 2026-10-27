@@ -71,14 +71,19 @@ def build_index(yw_dir: Path, rw_dir: Path, start: datetime, end: datetime,
 
 
 def load_sample(sample: Sample,
-                wind_sampler=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                wind_sampler=None,
+                leads: list[int] | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load one sample.
+
+    With ``leads`` (minutes), the target is the YW rate stack at each lead
+    time (shape [len(leads), H, W]); otherwise the single RW +60 min target
+    ([1, H, W]).
 
     Returns:
         x: float32 [C, H, W] log1p radar history (+ optional wind channels),
            invalid pixels = 0
-        y: float32 [1, H, W] target rate (mm/h), invalid pixels = 0
-        mask: bool [1, H, W] target validity mask
+        y: float32 [C_out, H, W] target rate (mm/h), invalid pixels = 0
+        mask: bool [C_out, H, W] target validity mask
     """
     frames = [read_frame(p) for p in sample.inputs]
     x = np.stack([np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0)
@@ -90,10 +95,27 @@ def load_sample(sample: Sample,
         t_now = datetime.strptime(frames[-1].timestamp, "%y%m%d%H%M")
         x = np.concatenate([x, wind_sampler.channels_for(t_now)], axis=0)
 
-    tgt = read_frame(sample.target)
-    y = np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0)[None].astype(np.float32)
-    mask = tgt.valid[None]
-    return x, y, mask
+    if leads is None:
+        tgt = read_frame(sample.target)
+        y = np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0)[None].astype(np.float32)
+        mask = tgt.valid[None]
+        return x, y, mask
+
+    t0 = datetime.strptime(frames[-1].timestamp, "%y%m%d%H%M")
+    # inputs live either in <yw>/<yymmdd>/<file> or legacy <yw>/<file>
+    p0 = Path(sample.inputs[0])
+    yw_root = p0.parent.parent if (p0.parent.name.isdigit()
+                                   and len(p0.parent.name) == 6) else p0.parent
+    ys, ms = [], []
+    for lead in leads:
+        try:
+            tgt = read_frame(_yw_path(yw_root, t0 + timedelta(minutes=lead)))
+            ys.append(np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0))
+            ms.append(tgt.valid)
+        except FileNotFoundError:
+            ys.append(np.zeros(x.shape[-2:], dtype=np.float32))
+            ms.append(np.zeros(x.shape[-2:], dtype=bool))
+    return x, np.stack(ys).astype(np.float32), np.stack(ms)
 
 
 def main(argv: list[str] | None = None) -> int:

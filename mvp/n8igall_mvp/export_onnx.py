@@ -29,7 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
-    model = UNet(ckpt["in_channels"], base=ckpt["base"])
+    leads = ckpt.get("leads")
+    out_channels = len(leads) if leads else 1
+    model = UNet(ckpt["in_channels"], base=ckpt["base"],
+                 out_channels=out_channels)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
