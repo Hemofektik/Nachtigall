@@ -72,7 +72,7 @@ def evaluate(model, loader, device, radar_channels: int,
             pred = model(x)
             loss_sum += weighted_mse_loss(pred, y, mask).item() * y.shape[0]
             n += y.shape[0]
-            last_radar = torch.expm1(x[:, radar_channels - 1: radar_channels])
+            last_radar = torch.expm1(x[:, radar_channels - 1])  # [B,H,W]
             y_rate = torch.expm1(y)
             pred_rate = torch.expm1(pred.clamp(min=0))
             for i, L in enumerate(leads):
@@ -80,8 +80,7 @@ def evaluate(model, loader, device, radar_channels: int,
                     csi_model[(L, t)].append(
                         csi(pred_rate[:, i], y_rate[:, i], mask[:, i], t))
                     csi_pers[(L, t)].append(
-                        csi(last_radar.expand_as(y_rate[:, i]),
-                            y_rate[:, i], mask[:, i], t))
+                        csi(last_radar, y_rate[:, i], mask[:, i], t))
     out = {"loss": loss_sum / max(n, 1)}
     for L in leads:
         for t in thresholds:
