@@ -112,6 +112,44 @@ Takeaways:
 * CSI@0.1 (drizzle) is unstable — the model is conservative on light rain;
   tune the loss weighting or add a focal term.
 
+### Lead-time skill curve (multi-lead model, Jun–Sep 2024 val split)
+
+One U-Net with 7 output channels predicts the YW rain rate at
++5/+10/+15/+20/+30/+45/+60 min simultaneously (29 inputs = 19×5-min radar +
+elevation + wind; epoch 9 of 10; model and persistence measured on
+identical masks):
+
+| Lead | CSI@0.1 model/pers | **CSI@1.0 model/pers** | CSI@5.0 model/pers |
+|---|---|---|---|
+| +5 min | 0.463 / 0.452 | **0.208 / 0.087 (2.4×)** | 0.073 / 0.003 (24×) |
+| +10 min | 0.395 / 0.344 | **0.107 / 0.047 (2.3×)** | 0.009 / 0.001 |
+| +15 min | 0.342 / 0.289 | **0.052 / 0.031 (1.7×)** | 0.001 / 0.001 |
+| +20 min | 0.304 / 0.251 | 0.025 / 0.024 (≈par) | 0.000 / 0.000 |
+| +30 min | 0.249 / 0.207 | 0.006 / 0.018 (0.3×) | 0.000 / 0.000 |
+| +45 min | 0.198 / 0.172 | 0.001 / 0.012 (0.1×) | 0.000 / 0.000 |
+| +60 min | 0.170 / 0.141 | 0.000 / 0.008 (0×) | 0.000 / 0.000 |
+
+Findings:
+
+* **Short leads are where the model wins big**: at ≥1 mm/h it beats
+  persistence 2.4× at +5 min, 2.3× at +10, 1.7× at +15; for heavy rain
+  (≥5 mm/h) at +5 min it is 24× persistence.
+* **Light rain (≥0.1 mm/h): model beats persistence at every lead**
+  (+8% at +5 min up to +21% at +60 min) — useful signal even at 1 h.
+* **The crossover is ~+20 min** at ≥1 mm/h: beyond it the multi-lead
+  model regresses toward low values (never predicts >1 mm/h at +60),
+  falling below persistence. Known multi-task MSE behavior on uncertain
+  long-lead targets; fixes: per-lead loss weights, predicting log-rates,
+  or a dedicated per-lead head/cascade (the single-lead +60 RW model
+  reached 0.121 CSI@1.0 — but on the smoother RW target).
+* Persistence itself decays ~10× from +5 to +60 min (0.087 → 0.008),
+  so the absolute difficulty ramp dominates everything.
+
+Known flaw in this run: checkpoint selection keyed on lead-60 CSI@1.0
+which was 0.000 every epoch, so `best.pt` froze at epoch 0 — the reported
+numbers come from `last.pt` (epoch 9) evaluated directly; selection now
+uses the cross-lead mean (fixed in train.py).
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors

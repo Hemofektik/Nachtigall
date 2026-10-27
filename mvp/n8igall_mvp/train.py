@@ -192,7 +192,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"L{L}={val[f'csi_lead{L}_1.0']:.3f}" for L in leads)
         print(line)
 
-        score = val["csi_1.0"]
+        # Select on the cross-lead mean: single-lead keys can be 0.0 in
+        # every epoch (frozen best.pt) when the primary lead is unlearned.
+        lead_scores = [val[f"csi_lead{L}_1.0"] for L in (leads or [60])]
+        score = float(np.nanmean([s for s in lead_scores
+                                  if not np.isnan(s)] or [np.nan]))
         if not np.isnan(score) and score > best:
             best = score
             torch.save({"model": model.state_dict(), "in_channels": in_channels,
