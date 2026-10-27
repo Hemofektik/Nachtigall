@@ -70,20 +70,29 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/mo
 
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
 
-Same period, same seed (0), same 80/20 chronological split, same 10 epochs,
+Same period, same seeds, same 80/20 chronological split, same 10 epochs,
 same channels (radar + elevation/slope/aspect + ERA5 wind incl. upslope and
-divergence). Only the input spacing differs; both windows span 90 minutes:
+divergence). Only the input spacing differs; both windows span 90 minutes.
 
-| Config | Input | Channels | CSI@0.1 | **CSI@1.0** | CSI@5.0 | persistence CSI@1.0 |
+Best-epoch CSI@1.0 per run (3 seeds each):
+
+| Config | Input | Channels | seed 0 | seed 1 | seed 2 | mean ± std |
 |---|---|---|---|---|---|---|
-| A: 30-min spacing | 4 frames | 14 | 0.137 | 0.101 | 0.000 | 0.001 |
-| **B: 5-min spacing** | 19 frames | 29 | 0.142 | **0.121** | 0.002 | 0.001 |
+| A: 30-min spacing | 4 frames | 14 | 0.101 | 0.118 | 0.119 | 0.113 ± 0.008 |
+| **B: 5-min spacing** | 19 frames | 29 | **0.121** | **0.125** | 0.119 | **0.121 ± 0.003** |
 
-**Verdict: 5-min spacing wins** — +20% relative CSI@1.0 (0.121 vs 0.101),
-consistent with the aliasing argument (30-min steps move convective cells
-20–30 km on a 1 km grid; 5-min steps keep displacement at 3.5–5 km). Both
-configs beat persistence ~100× at ≥1 mm/h. Caveats: single seed, best-epoch
-selection; a multi-seed run would confirm the margin.
+Per-threshold means over the 3 seeds (B config): CSI@0.1 = 0.138 ± 0.001,
+CSI@1.0 = 0.121 ± 0.003, CSI@5.0 = 0.001 ± 0.001. Persistence CSI@1.0 = 0.001.
+
+**Verdict: 5-min spacing wins** — higher mean CSI@1.0 (+0.008 absolute, +7%
+relative), never loses across seeds (2 wins, 1 tie), and is notably more
+*stable* (std 0.003 vs 0.008). This matches the aliasing argument: 30-min
+steps move convective cells 20–30 km on a 1 km grid; 5-min steps keep
+displacement at 3.5–5 km. Both configs beat persistence ~100× at ≥1 mm/h.
+
+Open weaknesses visible in both configs: CSI@5.0 ≈ 0 (heavy-rain events are
+essentially missed) and CSI@0.1 ≈ 0.14 (light rain, largely below the
+persistence baseline) — the model is tuned toward the 1 mm/h middle ground.
 
 ### Earlier experiments (Apr–May 2025, radar-only, 763 samples)
 
@@ -115,8 +124,9 @@ Takeaways:
 - [x] ONNX export + parity check
 - [x] Hourly sync daemon (systemd user service): RADKLIM gap-fill, real-time
       HDF5 mirror, 3D volume collection with retention + free-space guard
-- [x] Spacing A/B test: 5-min beats 30-min (+20% CSI@1.0)
-- [ ] Multi-seed confirmation of the A/B margin; loss tuning for drizzle CSI
-- [ ] Remaining wind months (2025-01 → 05) when open-meteo quota allows
+- [x] Spacing A/B test (3 seeds): 5-min beats 30-min (0.121±0.003 vs
+      0.113±0.008 CSI@1.0, never loses, lower variance)
+- [ ] Loss tuning: CSI@5.0 ≈ 0 (heavy rain missed), CSI@0.1 < persistence
+      (drizzle) — threshold-weighted/focal loss or per-threshold metrics
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
 - [ ] 3D volume-scan input channels (collector is accumulating data)
