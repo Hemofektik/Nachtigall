@@ -11,6 +11,8 @@ Output: ``[B, 1, H, W]`` — predicted ``log1p(rate)`` at +lead minutes.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,6 +52,15 @@ class UNet(nn.Module):
         self.head = nn.Conv2d(chans[0], out_channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Pooling floors odd sizes (900 -> 450 -> 225 -> 112), breaking
+        # skip alignment on upsample; pad to the network stride and crop back.
+        mult = 2 ** (len(self.enc) - 1)
+        h, w = x.shape[-2:]
+        ph = (mult - h % mult) % mult
+        pw = (mult - w % mult) % mult
+        if ph or pw:
+            x = F.pad(x, (0, pw, 0, ph))
+
         skips = []
         for i, block in enumerate(self.enc):
             x = block(x)
@@ -60,7 +71,8 @@ class UNet(nn.Module):
             x = self.dec[i](x)  # upsample
             x = torch.cat([x, skips.pop()], dim=1)
             x = self.dec[i + 1](x)
-        return self.head(x)
+        out = self.head(x)
+        return out[..., :h, :w]
 
 
 def weighted_mse_loss(pred: torch.Tensor, target: torch.Tensor,
@@ -73,6 +85,45 @@ def weighted_mse_loss(pred: torch.Tensor, target: torch.Tensor,
                          torch.ones_like(target))
     weight = weight * mask
     return (err * weight).sum() / mask.sum().clamp(min=1.0)
+
+
+def _rain_weight(target: torch.Tensor, rain_threshold: float,
+                 rain_weight: float) -> torch.Tensor:
+    return torch.where(target > rain_threshold,
+                       torch.full_like(target, rain_weight),
+                       torch.ones_like(target))
+
+
+def weighted_huber_loss(pred: torch.Tensor, target: torch.Tensor,
+                        mask: torch.Tensor, delta: float = 0.1,
+                        rain_threshold: float = 0.1,
+                        rain_weight: float = 5.0) -> torch.Tensor:
+    """Huber loss on log1p rates: linear tails damp the influence of
+    clutter spikes and large misses that blur MSE-trained predictions."""
+    err = pred - target
+    abs_err = err.abs()
+    huber = torch.where(abs_err <= delta,
+                        0.5 * err ** 2,
+                        delta * (abs_err - 0.5 * delta))
+    weight = _rain_weight(target, rain_threshold, rain_weight) * mask
+    return (huber * weight).sum() / mask.sum().clamp(min=1.0)
+
+
+def soft_csi_loss(pred: torch.Tensor, target: torch.Tensor,
+                  mask: torch.Tensor, threshold: float = 1.0,
+                  sharpness: float = 20.0) -> torch.Tensor:
+    """(1 - soft CSI) at ``threshold`` mm/h in log space.
+
+    Smooth surrogate of the CSI metric itself: rewards hits, penalizes
+    misses and false alarms symmetrically - directly counters the
+    systematic over-wetting of weighted pointwise losses.
+    """
+    th = math.log1p(threshold)
+    p = torch.sigmoid(sharpness * (pred - th)) * mask
+    t = torch.sigmoid(sharpness * (target - th)) * mask
+    hits = (p * t).sum()
+    denom = p.sum() + t.sum() - hits
+    return 1.0 - hits / denom.clamp(min=1e-6)
 
 
 def csi(pred_rate: torch.Tensor, target_rate: torch.Tensor,

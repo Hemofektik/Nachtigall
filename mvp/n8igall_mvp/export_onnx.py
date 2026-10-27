@@ -32,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     leads = ckpt.get("leads")
     out_channels = len(leads) if leads else 1
     model = UNet(ckpt["in_channels"], base=ckpt["base"],
+                 depth=ckpt.get("depth", 3),
                  out_channels=out_channels)
     model.load_state_dict(ckpt["model"])
     model.eval()

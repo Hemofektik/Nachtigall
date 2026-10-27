@@ -21,7 +21,20 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .dataset import Sample, load_sample
-from .model import UNet, csi, weighted_mse_loss
+from .model import UNet, csi, soft_csi_loss, weighted_huber_loss, weighted_mse_loss
+
+
+def make_loss(name: str):
+    if name == "mse":
+        return weighted_mse_loss
+    if name == "huber":
+        return weighted_huber_loss
+    if name == "huber_csi":
+        def loss(pred, target, mask):
+            return (weighted_huber_loss(pred, target, mask)
+                    + 0.5 * soft_csi_loss(pred, target, mask, threshold=1.0))
+        return loss
+    raise ValueError(f"unknown loss: {name}")
 
 
 class RadolanDataset(Dataset):
@@ -105,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--crop", type=int, default=512)
     p.add_argument("--base-channels", type=int, default=32)
+    p.add_argument("--depth", type=int, default=3,
+                   help="U-Net encoder levels (3 = original, 4 = ~7M params)")
+    p.add_argument("--loss", choices=("mse", "huber", "huber_csi"),
+                   default="mse")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--wind", type=Path, default=None,
@@ -154,13 +171,14 @@ def main(argv: list[str] | None = None) -> int:
                    + (0 if wind_sampler is None else WIND_CHANNELS))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_channels = len(leads) if leads else 1
-    model = UNet(in_channels, base=args.base_channels,
+    model = UNet(in_channels, base=args.base_channels, depth=args.depth,
                  out_channels=out_channels).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
           f"out_ch={out_channels}" + (f" leads={leads}" if leads else ""))
 
+    loss_fn = make_loss(args.loss)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
@@ -171,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         t0, running = time.time(), 0.0
         for i, (x, y, mask) in enumerate(train_dl):
             x, y, mask = x.to(device), y.to(device), mask.to(device)
-            loss = weighted_mse_loss(model(x), y, mask)
+            loss = loss_fn(model(x), y, mask)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -200,11 +218,13 @@ def main(argv: list[str] | None = None) -> int:
         if not np.isnan(score) and score > best:
             best = score
             torch.save({"model": model.state_dict(), "in_channels": in_channels,
-                        "base": args.base_channels, "leads": leads,
+                        "base": args.base_channels, "depth": args.depth,
+                        "leads": leads,
                         "val": val}, args.out / "best.pt")
 
     torch.save({"model": model.state_dict(), "in_channels": in_channels,
-                "base": args.base_channels, "leads": leads}, args.out / "last.pt")
+                "base": args.base_channels, "depth": args.depth,
+                "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
     return 0
 
