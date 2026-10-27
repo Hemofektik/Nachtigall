@@ -1,16 +1,17 @@
-"""Render a prediction-vs-actual comparison video from a trained checkpoint.
+"""Render ONE issue-time example: measured vs predicted evolution, 0→60 min.
 
-One row per lead time (default 5,10,15,20,30,45,60 min):
+Two panels side by side, one short video for a single issue time ``t``:
 
-    row L:   PREDICTION issued at t (valid at t+L)  |  ACTUAL at t+L
+    LEFT : MEASURED radar from t (0 min) to t+60, playing forward
+    RIGHT: PREDICTION the model issued at t for each of those same times
 
-All rows share one issue time ``t``; every row's two panels show the same
-valid time, so prediction and measurement are directly comparable. Frames
-advance at the native 5-minute radar cadence.
+Both panels show the same valid time at every frame, so the eye can
+compare them directly as time advances. The model's discrete lead
+outputs (5/10/15/20/30/45/60 min) are linearly interpolated onto the
+5-minute playback grid; frame 0 uses the input frame itself.
 
 Usage:
-    python -m n8igall_mvp.render_video \
-        --start 2024-09-08T22:00 --hours 6 --leads 5,10,15,30,60
+    python -m n8igall_mvp.render_video --start 2024-09-09T01:00
 """
 
 from __future__ import annotations
@@ -34,17 +35,17 @@ from .radolan import read_frame
 from .wind import WindSampler
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent
-ALL_LEADS = [5, 10, 15, 20, 30, 45, 60]
+ALL_LEADS = [5, 10, 15, 20, 30, 45, 60]  # model output channels
 
 # Precipitation colormap: white (dry) -> blue -> green -> yellow -> red.
 PRECIP_CMAP = mcolors.LinearSegmentedColormap.from_list(
     "precip",
     [(0.00, "#ffffff"),
-     (0.02, "#dbeeff"),   # ~0.2 mm/h
+     (0.02, "#dbeeff"),
      (0.06, "#a6d4ff"),
      (0.12, "#5aa9f0"),
      (0.20, "#2e7ac0"),
-     (0.35, "#2fa060"),   # ~3 mm/h
+     (0.35, "#2fa060"),
      (0.50, "#d8d93a"),
      (0.65, "#f0922e"),
      (0.80, "#e04030"),
@@ -64,24 +65,38 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
                            wind.channels_for(t)], axis=0)
 
 
+def pred_at_lead(pred_all: np.ndarray, lead: int) -> np.ndarray:
+    """Model output at minute ``lead``, linearly interpolated between the
+    discrete lead channels (identity at lead 0: the input frame itself)."""
+    if lead <= 0:
+        return pred_all[0] * 0.0  # replaced by input frame by caller
+    if lead in ALL_LEADS:
+        return pred_all[ALL_LEADS.index(lead)]
+    # linear interpolation between bracketing leads
+    lo = max(l for l in ALL_LEADS if l < lead)
+    hi = min(l for l in ALL_LEADS if l > lead)
+    w = (lead - lo) / (hi - lo)
+    return pred_all[ALL_LEADS.index(lo)] * (1 - w) + \
+        pred_all[ALL_LEADS.index(hi)] * w
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", type=Path,
                    default=_PKG_ROOT / "runs" / "multilead" / "last.pt")
     p.add_argument("--start", type=datetime.fromisoformat,
-                   default=datetime(2024, 9, 8, 22, 0))
-    p.add_argument("--hours", type=float, default=6)
+                   default=datetime(2024, 9, 9, 1, 0),
+                   help="single issue time")
+    p.add_argument("--max-lead", type=int, default=60)
     p.add_argument("--step-min", type=int, default=5)
-    p.add_argument("--leads", default="5,10,15,20,30,45,60")
     p.add_argument("--vmax", type=float, default=8.0)
-    p.add_argument("--fps", type=int, default=5)
+    p.add_argument("--fps", type=int, default=2)
     p.add_argument("--out", type=Path,
                    default=_PKG_ROOT / "output" / "pred_vs_actual.mp4")
     args = p.parse_args(argv)
 
     yw_root = _PKG_ROOT / "data" / "raw" / "yw"
-    leads = [int(v) for v in args.leads.split(",")]
-    lead_idx = {L: ALL_LEADS.index(L) for L in leads}
+    t = args.start
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     model = UNet(ckpt["in_channels"], base=ckpt["base"],
@@ -94,70 +109,72 @@ def main(argv: list[str] | None = None) -> int:
     wind = WindSampler(_PKG_ROOT / "data" / "wind" / "era5_wind.npz",
                        elevation=static_npz["elevation"])
 
+    # One issue time: model outputs for all discrete leads + input frame.
+    x = assemble_input(yw_root, t, static, wind)
+    with torch.no_grad():
+        pred_all = model(torch.from_numpy(x)[None]).numpy()[0]  # [7,H,W]
+    input_now = np.expm1(x[0])  # measured frame at lead 0
+
     cmap = PRECIP_CMAP.copy()
     cmap.set_bad(NO_DATA)
     norm = mcolors.Normalize(0.0, args.vmax)
 
-    n_rows = len(leads)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(11.5, 2.7 * n_rows + 1.2))
-    fig.subplots_adjust(top=1 - 0.55 / (2.7 * n_rows + 1.2), bottom=0.03,
-                        wspace=0.02, hspace=0.35, left=0.02, right=0.90)
+    fig, (ax_m, ax_p) = plt.subplots(1, 2, figsize=(12, 6.4))
+    fig.subplots_adjust(top=0.82, bottom=0.05, wspace=0.04, left=0.02,
+                        right=0.90)
 
-    def show(ax, arr, valid, title):
-        ax.imshow(np.ma.masked_where(~valid, np.clip(arr, 0, args.vmax)),
-                  cmap=cmap, norm=norm, interpolation="nearest")
-        ax.set_title(title, fontsize=9.5)
-        ax.axis("off")
+    # Playback grid: 0, 5, 10, ..., max_lead
+    leads = list(range(0, args.max_lead + 1, args.step_min))
+
+    frames_data = []
+    for lead in leads:
+        valid_t = t + timedelta(minutes=lead)
+        try:
+            af = read_frame(_yw_path(yw_root, valid_t))
+            measured = np.where(af.valid, af.data, np.nan)
+            valid = af.valid
+        except FileNotFoundError:
+            measured = np.full_like(input_now, np.nan)
+            valid = np.zeros_like(input_now, dtype=bool)
+        if lead == 0:
+            predicted = input_now
+        else:
+            predicted = np.expm1(np.clip(pred_at_lead(pred_all, lead),
+                                         0, None))
+        frames_data.append((lead, valid_t, measured, predicted, valid))
 
     def draw(i: int) -> None:
-        t, preds, actuals, vmasks = frames[i]
-        for r, L in enumerate(leads):
-            valid_t = t + timedelta(minutes=L)
-            pred, act, vm = preds[L], actuals[L], vmasks[L]
-            if r == 0:
-                show(axes[r][0], pred, vm,
-                     f"PREDICTED +{L} min (issued {t:%H:%M}Z)")
-                show(axes[r][1], act, vm, f"ACTUAL +{L} min ({valid_t:%H:%M}Z)")
-            else:
-                show(axes[r][0], pred, vm, f"+{L} min prediction")
-                show(axes[r][1], act, vm, f"+{L} min actual ({valid_t:%H:%M}Z)")
+        lead, valid_t, measured, predicted, valid = frames_data[i]
+        for ax in (ax_m, ax_p):
+            ax.clear()
+            ax.axis("off")
+        ax_m.imshow(np.ma.masked_where(~valid,
+                                       np.clip(measured, 0, args.vmax)),
+                    cmap=cmap, norm=norm, interpolation="nearest")
+        ax_p.imshow(np.ma.masked_where(~valid,
+                                       np.clip(predicted, 0, args.vmax)),
+                    cmap=cmap, norm=norm, interpolation="nearest")
+        tag = " (input)" if lead == 0 else ""
+        ax_m.set_title(f"MEASURED  {valid_t:%m-%d %H:%M}Z  "
+                       f"(t+{lead} min)", fontsize=12)
+        ax_p.set_title(f"PREDICTED{tag}  {valid_t:%m-%d %H:%M}Z  "
+                       f"(issued {t:%H:%M}Z)", fontsize=12)
         fig.suptitle(
-            f"Nachtigall nowcast vs radar — issued {t:%Y-%m-%d %H:%M}Z, "
-            f"row = lead time   (white = dry, grey = no data, "
-            f"0–{args.vmax:g} mm/h)", fontsize=11.5, y=0.985)
-
-    # Frames: one issue time every --step-min; skip if any needed file missing.
-    frames = []
-    t = args.start
-    end = t + timedelta(hours=args.hours)
-    while t < end:
-        try:
-            x = assemble_input(yw_root, t, static, wind)
-            with torch.no_grad():
-                pred_all = model(torch.from_numpy(x)[None]).numpy()[0]
-            preds, actuals, vmasks = {}, {}, {}
-            for L in leads:
-                af = read_frame(_yw_path(yw_root, t + timedelta(minutes=L)))
-                preds[L] = pred_all[lead_idx[L]]
-                actuals[L] = np.where(af.valid, af.data, np.nan)
-                vmasks[L] = af.valid
-            frames.append((t, preds, actuals, vmasks))
-        except FileNotFoundError:
-            pass
-        t += timedelta(minutes=args.step_min)
-
-    if not frames:
-        raise SystemExit("no frames rendered (missing data in window?)")
+            f"Nachtigall — one example, issued {t:%Y-%m-%d %H:%M}Z, "
+            f"playing 0 → +{args.max_lead} min   "
+            f"(white = dry, grey = no data, 0–{args.vmax:g} mm/h)",
+            fontsize=12)
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    cax = fig.add_axes([0.915, 0.15, 0.014, 0.7])
+    cax = fig.add_axes([0.915, 0.15, 0.014, 0.68])
     fig.colorbar(sm, cax=cax, label="mm/h")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    ani = anim.FuncAnimation(fig, draw, frames=len(frames), init_func=draw(0))
+    ani = anim.FuncAnimation(fig, draw, frames=len(frames_data),
+                             init_func=draw(0))
     ani.save(args.out, writer=anim.FFMpegWriter(fps=args.fps, bitrate=2500))
-    print(f"wrote {args.out} ({len(frames)} frames @ {args.step_min} min, "
-          f"leads={leads}, {args.start:%Y-%m-%d %H:%M}Z +{args.hours}h)")
+    print(f"wrote {args.out} ({len(frames_data)} frames, issued "
+          f"{t:%Y-%m-%d %H:%M}Z, 0 → +{args.max_lead} min)")
     return 0
 
 
