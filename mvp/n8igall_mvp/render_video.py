@@ -90,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-lead", type=int, default=60)
     p.add_argument("--step-min", type=int, default=5)
     p.add_argument("--vmax", type=float, default=8.0)
+    p.add_argument("--bias-correction", type=float, default=1.0,
+                   help="multiply predictions by this factor "
+                        "(model over-predicts ~1.8x; use ~0.56)")
     p.add_argument("--fps", type=int, default=2)
     p.add_argument("--out", type=Path,
                    default=_PKG_ROOT / "output" / "pred_vs_actual.mp4")
@@ -113,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     x = assemble_input(yw_root, t, static, wind)
     with torch.no_grad():
         pred_all = model(torch.from_numpy(x)[None]).numpy()[0]  # [7,H,W]
-    input_now = np.expm1(x[0])  # measured frame at lead 0
+    input_now = np.expm1(x[18])  # radar frame at issue time t (last of 19)
 
     cmap = PRECIP_CMAP.copy()
     cmap.set_bad(NO_DATA)
@@ -140,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             predicted = input_now
         else:
             predicted = np.expm1(np.clip(pred_at_lead(pred_all, lead),
-                                         0, None))
+                                         0, None)) * args.bias_correction
         frames_data.append((lead, valid_t, measured, predicted, valid))
 
     def draw(i: int) -> None:
