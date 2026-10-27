@@ -56,13 +56,14 @@ NO_DATA = "#dcdcdc"
 
 def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
                    wind: WindSampler) -> np.ndarray:
-    """[29, H, W] exactly as training: 19 radar + 4 static + 6 wind."""
+    """[29, H, W] exactly as training's RadolanDataset order:
+    19 radar + 6 wind + 4 static (wind before static!)."""
     radar = []
     for i in range(19):
         f = read_frame(_yw_path(yw_root, t - timedelta(minutes=5 * (18 - i))))
         radar.append(np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0))
-    return np.concatenate([np.stack(radar).astype(np.float32), static,
-                           wind.channels_for(t)], axis=0)
+    return np.concatenate([np.stack(radar).astype(np.float32),
+                           wind.channels_for(t), static], axis=0)
 
 
 def pred_at_lead(pred_all: np.ndarray, lead: int) -> np.ndarray:
