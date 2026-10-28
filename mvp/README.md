@@ -150,6 +150,43 @@ which was 0.000 every epoch, so `best.pt` froze at epoch 0 — the reported
 numbers come from `last.pt` (epoch 9) evaluated directly; selection now
 uses the cross-lead mean (fixed in train.py).
 
+### Architecture + loss ablation (multi-lead, Jun–Sep 2024 val)
+
+Motivated by visible blur: the original model (0.47 M params, depth 3,
+weighted MSE) has a ~44 km receptive field — smaller than the 40–60 km a
+storm travels in 60 min — and MSE regresses to conditional means.
+
+| | old | new |
+|---|---|---|
+| params / depth | 0.47 M / 3 | **7.7 M / 4** |
+| receptive field | ~44 km | **~110 km** |
+| loss | weighted MSE | **Huber + 0.5·soft-CSI** |
+
+CSI@1.0 per lead (same split, seed, inputs):
+
+| lead | old | **new** | persistence | new/old | new/pers |
+|---|---|---|---|---|---|
+| +5 min | 0.208 | **0.221** | 0.087 | 1.1× | 2.5× |
+| +10 min | 0.107 | **0.152** | 0.047 | 1.4× | 3.2× |
+| +15 min | 0.052 | **0.114** | 0.031 | 2.2× | 3.7× |
+| +20 min | 0.025 | **0.083** | 0.024 | 3.3× | 3.4× |
+| +30 min | 0.006 | **0.038** | 0.018 | 6.0× | 2.1× |
+| +45 min | 0.001 | 0.007 | 0.012 | 8.4× | 0.6× |
+| +60 min | 0.000 | 0.000 | 0.008 | — | 0× |
+
+Findings:
+
+* **The bigger receptive field is the win**: gains grow with lead time
+  (6× at +30 min) — exactly what the RF argument predicts. The model now
+  beats persistence out to +30 min (crossover moved from ~+20 to ~+35 min).
+* **Sharper output**: rendered predictions show defined band structure
+  instead of smooth blobs (Huber damps the mean-collapse; soft-CSI
+  sharpens threshold decisions).
+* **Still open**: +45/+60 min remain at/below persistence — needs either
+  more depth (~250 km RF at depth 5), explicit advection (warping
+  operator à la NowcastNet), or longer training; light-rain CSI@0.1
+  dipped slightly (0.46 → 0.42).
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
