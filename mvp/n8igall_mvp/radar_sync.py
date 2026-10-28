@@ -29,8 +29,10 @@ from .collect_volumes import prune as prune_volumes
 from .download_radolan import download_rw, download_yw
 
 _PKG_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DEST = _PKG_ROOT / "data" / "raw"
-DEFAULT_VOLUMES = _PKG_ROOT / "data" / "volumes"
+# Data lives on the dedicated /data volume (477 GB ext4); mvp/data is a
+# symlink to /data/n8igall/data.
+DEFAULT_DEST = Path("/data/n8igall/data/raw")
+DEFAULT_VOLUMES = Path("/data/n8igall/data/volumes")
 WINDOW_DAYS = 14  # recent YW daily tars cover ~2 weeks; RW flat files 2025+
 MIN_FREE_GB = 25  # never let volume collection fill the system disk
 REALTIME = "https://opendata.dwd.de/weather/radar/radolan"
