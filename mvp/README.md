@@ -187,6 +187,21 @@ Findings:
   operator à la NowcastNet), or longer training; light-rain CSI@0.1
   dipped slightly (0.46 → 0.42).
 
+### Intensity calibration (post-hoc, no retrain)
+
+The 7.7 M model's raw outputs explode in the tail (observed max 194,105 mm/h
+vs actual ~17): Huber delta=0.1 in log space made large overshoots nearly
+free, and soft-CSI rewarded "above threshold" regardless of magnitude.
+Fixes: delta -> 1.0 + explicit overshoot penalty (in the loss, for retrains),
+and per-lead **quantile-mapping calibration in log space** fitted on the
+train split (`calibration.npz`, applied by `render_video --calibrate`).
+Raw-space mapping overcorrected (the training pool's tail spans 6..194k
+mm/h, squashing everything above ~6); log space weights each order of
+magnitude equally. Verified at +5 min: max 739.7 -> 4.51 (actual 7.1),
+px>1mm/h 14,823 -> 1,697 (actual 1,381), wet area within 2% of actual.
+Caveat: calibration cannot invent tail values the model never produced,
+so extremes still undershoot; the loss-fixed retrain is the real cure.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
