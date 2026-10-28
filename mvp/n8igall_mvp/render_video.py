@@ -94,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--bias-correction", type=float, default=1.0,
                    help="multiply predictions by this factor "
                         "(model over-predicts ~1.8x; use ~0.56)")
+    p.add_argument("--calibrate", action="store_true",
+                   help="apply quantile-mapping calibration from "
+                        "<checkpoint_dir>/calibration.npz (fixes intensity "
+                        "explosion without retraining)")
     p.add_argument("--fps", type=int, default=2)
     p.add_argument("--out", type=Path,
                    default=_PKG_ROOT / "output" / "pred_vs_actual.mp4")
@@ -131,6 +135,15 @@ def main(argv: list[str] | None = None) -> int:
     # Playback grid: 0, 5, 10, ..., max_lead
     leads = list(range(0, args.max_lead + 1, args.step_min))
 
+    calib = None
+    if args.calibrate:
+        calib_path = args.checkpoint.parent / "calibration.npz"
+        if calib_path.exists():
+            calib = np.load(calib_path)
+            print(f"applying calibration from {calib_path}")
+        else:
+            print(f"WARNING: no calibration at {calib_path}, rendering raw")
+
     frames_data = []
     for lead in leads:
         valid_t = t + timedelta(minutes=lead)
@@ -146,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             predicted = np.expm1(np.clip(pred_at_lead(pred_all, lead),
                                          0, None)) * args.bias_correction
+            if calib is not None and f"p{lead}" in calib:
+                # per-lead quantile mapping in log space
+                predicted = np.expm1(np.interp(np.log1p(predicted),
+                                               calib[f"p{lead}"],
+                                               calib[f"a{lead}"]))
         frames_data.append((lead, valid_t, measured, predicted, valid))
 
     def draw(i: int) -> None:

@@ -95,11 +95,16 @@ def _rain_weight(target: torch.Tensor, rain_threshold: float,
 
 
 def weighted_huber_loss(pred: torch.Tensor, target: torch.Tensor,
-                        mask: torch.Tensor, delta: float = 0.1,
+                        mask: torch.Tensor, delta: float = 1.0,
                         rain_threshold: float = 0.1,
                         rain_weight: float = 5.0) -> torch.Tensor:
     """Huber loss on log1p rates: linear tails damp the influence of
-    clutter spikes and large misses that blur MSE-trained predictions."""
+    clutter spikes and large misses that blur MSE-trained predictions.
+
+    ``delta`` is in log1p units: 1.0 means errors beyond ~2.7x in rate
+    grow only linearly. Too small a delta (0.1) made large overshoots
+    nearly free and let predictions explode (740 mm/h vs 7 mm/h actual).
+    """
     err = pred - target
     abs_err = err.abs()
     huber = torch.where(abs_err <= delta,
@@ -111,19 +116,26 @@ def weighted_huber_loss(pred: torch.Tensor, target: torch.Tensor,
 
 def soft_csi_loss(pred: torch.Tensor, target: torch.Tensor,
                   mask: torch.Tensor, threshold: float = 1.0,
-                  sharpness: float = 20.0) -> torch.Tensor:
+                  sharpness: float = 20.0,
+                  over_penalty: float = 0.5) -> torch.Tensor:
     """(1 - soft CSI) at ``threshold`` mm/h in log space.
 
     Smooth surrogate of the CSI metric itself: rewards hits, penalizes
     misses and false alarms symmetrically - directly counters the
     systematic over-wetting of weighted pointwise losses.
+
+    ``over_penalty`` additionally punishes predicting far above the
+    threshold (a 740 mm/h prediction earns no more than a 7 mm/h one
+    but must not be free either).
     """
     th = math.log1p(threshold)
     p = torch.sigmoid(sharpness * (pred - th)) * mask
     t = torch.sigmoid(sharpness * (target - th)) * mask
     hits = (p * t).sum()
     denom = p.sum() + t.sum() - hits
-    return 1.0 - hits / denom.clamp(min=1e-6)
+    over = F.relu(pred - target) * p  # overshoot on predicted-rain pixels
+    return (1.0 - hits / denom.clamp(min=1e-6)) \
+        + over_penalty * over.sum() / mask.sum().clamp(min=1.0)
 
 
 def csi(pred_rate: torch.Tensor, target_rate: torch.Tensor,
