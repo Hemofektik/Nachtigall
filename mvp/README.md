@@ -202,6 +202,24 @@ px>1mm/h 14,823 -> 1,697 (actual 1,381), wet area within 2% of actual.
 Caveat: calibration cannot invent tail values the model never produced,
 so extremes still undershoot; the loss-fixed retrain is the real cure.
 
+### Loss fix ablation (same 7.7 M model, Huber delta 0.1→1.0 + overshoot penalty)
+
+| lead | old loss | **new loss** | persistence | change |
+|---|---|---|---|---|
+| +5 min | 0.221 | **0.238** | 0.087 | +8% |
+| +10 min | 0.152 | **0.163** | 0.047 | +7% |
+| +15 min | 0.114 | **0.119** | 0.031 | +5% |
+| +20 min | 0.083 | **0.086** | 0.024 | +4% |
+| +30 min | 0.038 | 0.029 | 0.018 | −24% |
+| +45/+60 min | 0.007/0.000 | 0.000/0.000 | 0.012/0.008 | worse |
+
+val_loss 0.0229 → 0.0123 (−46%). **Raw intensities now physically sane
+without calibration**: max 9.3 vs actual 7.1 (was 739.7 — a 100× fix);
+px>5 mm/h 9× over (was 128×); wet area +11%. Trade-off: the overshoot
+penalty makes the model conservative at long leads (+30 CSI −24%) where
+uncertainty is highest — short leads (the operationally useful range)
+improved across the board.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
