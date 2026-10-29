@@ -237,7 +237,7 @@ _Pvt_Extensions
 
 build/
 # MVP data and training artifacts
-mvp/data/
+mvp/data
 mvp/runs/
 __pycache__/
 mvp/output/
