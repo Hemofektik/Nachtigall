@@ -31,7 +31,8 @@ def _block(cin: int, cout: int) -> nn.Sequential:
 
 class UNet(nn.Module):
     def __init__(self, in_channels: int, base: int = 32, depth: int = 3,
-                 out_channels: int = 1, residual_from: int | None = None):
+                 out_channels: int = 1, residual_from: int | None = None,
+                 delta_cap: float | None = None):
         """U-Net predicting log1p rain rates.
 
         ``residual_from``: channel index of the "now" radar frame. When set,
@@ -42,6 +43,7 @@ class UNet(nn.Module):
         """
         super().__init__()
         self.residual_from = residual_from
+        self.delta_cap = delta_cap
         self.enc = nn.ModuleList()
         self.dec = nn.ModuleList()
         chans = [base * (2 ** i) for i in range(depth)]
@@ -86,6 +88,10 @@ class UNet(nn.Module):
         if self.residual_from is not None:
             # delta prediction on top of the current radar frame (log1p space)
             now = x_orig[:, self.residual_from:self.residual_from + 1]
+            if self.delta_cap is not None:
+                # hard bound on the delta: the prediction can never exceed
+                # expm1(now + cap) mm/h, killing hallucinated spikes
+                out = self.delta_cap * torch.tanh(out / self.delta_cap)
             out = now + out
         return out
 
@@ -151,6 +157,19 @@ def soft_csi_loss(pred: torch.Tensor, target: torch.Tensor,
     over = F.relu(pred - target) * p  # overshoot on predicted-rain pixels
     return (1.0 - hits / denom.clamp(min=1e-6)) \
         + over_penalty * over.sum() / mask.sum().clamp(min=1.0)
+
+
+def rate_explosion_penalty(pred: torch.Tensor, target: torch.Tensor,
+                           mask: torch.Tensor, weight: float = 0.05) -> torch.Tensor:
+    """Penalize over-prediction in RATE space (mm/h), not log space.
+
+    In log space a 61 vs 0 mm/h hallucination looks like a modest 4-unit
+    error diluted over 810k pixels; in rate space it is a 61-unit error
+    on exactly the pixels that matter. Mean over all masked pixels keeps
+    the term comparable to the main loss.
+    """
+    rate_over = F.relu(torch.expm1(pred) - torch.expm1(target))
+    return weight * (rate_over * mask).sum() / mask.sum().clamp(min=1.0)
 
 
 def csi(pred_rate: torch.Tensor, target_rate: torch.Tensor,

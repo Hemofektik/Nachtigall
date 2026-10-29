@@ -21,7 +21,8 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .dataset import Sample, load_sample
-from .model import UNet, csi, soft_csi_loss, weighted_huber_loss, weighted_mse_loss
+from .model import (UNet, csi, rate_explosion_penalty, soft_csi_loss,
+                    weighted_huber_loss, weighted_mse_loss)
 
 
 def make_loss(name: str):
@@ -33,6 +34,12 @@ def make_loss(name: str):
         def loss(pred, target, mask):
             return (weighted_huber_loss(pred, target, mask)
                     + 0.5 * soft_csi_loss(pred, target, mask, threshold=1.0))
+        return loss
+    if name == "huber_csi_rate":
+        def loss(pred, target, mask):
+            return (weighted_huber_loss(pred, target, mask)
+                    + 0.5 * soft_csi_loss(pred, target, mask, threshold=1.0)
+                    + rate_explosion_penalty(pred, target, mask))
         return loss
     raise ValueError(f"unknown loss: {name}")
 
@@ -120,11 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base-channels", type=int, default=32)
     p.add_argument("--depth", type=int, default=3,
                    help="U-Net encoder levels (3 = original, 4 = ~7M params)")
-    p.add_argument("--loss", choices=("mse", "huber", "huber_csi"),
+    p.add_argument("--loss", choices=("mse", "huber", "huber_csi",
+                                      "huber_csi_rate"),
                    default="mse")
     p.add_argument("--residual", action="store_true",
                    help="predict a delta on top of the current radar frame "
                         "(conserves input texture by construction)")
+    p.add_argument("--delta-cap", type=float, default=None,
+                   help="hard bound on the residual delta in log1p units "
+                        "(e.g. 3.0 caps prediction at expm1(now+3))")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--wind", type=Path, default=None,
@@ -177,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     residual_from = (len(train_s[0].inputs) - 1) if args.residual else None
     model = UNet(in_channels, base=args.base_channels, depth=args.depth,
                  out_channels=out_channels,
-                 residual_from=residual_from).to(device)
+                 residual_from=residual_from,
+                 delta_cap=args.delta_cap).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
@@ -225,12 +237,14 @@ def main(argv: list[str] | None = None) -> int:
             torch.save({"model": model.state_dict(), "in_channels": in_channels,
                         "base": args.base_channels, "depth": args.depth,
                         "residual_from": residual_from,
+                        "delta_cap": args.delta_cap,
                         "leads": leads,
                         "val": val}, args.out / "best.pt")
 
     torch.save({"model": model.state_dict(), "in_channels": in_channels,
                 "base": args.base_channels, "depth": args.depth,
                 "residual_from": residual_from,
+                "delta_cap": args.delta_cap,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
     return 0

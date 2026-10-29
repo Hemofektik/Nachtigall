@@ -110,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     model = UNet(ckpt["in_channels"], base=ckpt["base"],
                  depth=ckpt.get("depth", 3),
                  out_channels=len(ckpt.get("leads") or ALL_LEADS),
-                 residual_from=ckpt.get("residual_from"))
+                 residual_from=ckpt.get("residual_from"),
+                 delta_cap=ckpt.get("delta_cap"))
     model.load_state_dict(ckpt["model"])
     model.eval()
 
