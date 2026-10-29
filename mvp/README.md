@@ -243,6 +243,33 @@ above persistence for the first time (0.469 > 0.452). Rendered +5
 frames retain the input's granular cell texture instead of a smooth
 blob. This is the new default configuration.
 
+### Capped residual + rate-space penalty + calibration
+
+Measured problem on the residual model at +5 min: max 61.1 vs actual
+7.1 mm/h, 152 px >10 mm/h (actual 0), Laplacian 0.558 vs 0.163 — the
+"fake details" were spurious spikes (structure was fine: corr 0.824 vs
+physical bound 0.818). Fixes: hard `tanh` bound on the delta
+(`--delta-cap 1.5`), rate-space explosion penalty
+(`--loss huber_csi_rate`), then per-lead log-space calibration.
+
++5 min, raw → calibrated (actual in parens):
+
+| metric | residual | capped raw | **capped+calib** |
+|---|---|---|---|
+| max mm/h | 61.1 | 35.8 | **8.1 (7.1)** |
+| px >1 mm/h | 12,701 | 12,344 | **1,571 (1,381)** |
+| px >5 mm/h | 827 | 696 | **12 (20)** |
+| px >0.1 mm/h | 85,774 | 79,025 | **78,368 (81,038)** |
+| Laplacian std | 0.558 | 0.388 | **0.111 (0.163)** |
+
+CSI unchanged from the residual run (0.234/0.163/0.121/0.091 at
++5/10/15/20) — the cap and penalty cost nothing in skill while cutting
+the raw explosion ~2×, and calibration finishes the job: every intensity
+statistic now within ~15% of actual, texture granularity slightly
+*smoother* than actual (0.111 vs 0.163) instead of 3.4× spikier.
+Remaining known gap: +20 min under-predicts extremes after calibration
+(max 4.4 vs 8.3) — quantile mapping cannot invent tail values.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
