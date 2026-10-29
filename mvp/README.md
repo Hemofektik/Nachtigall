@@ -220,6 +220,29 @@ penalty makes the model conservative at long leads (+30 CSI −24%) where
 uncertainty is highest — short leads (the operationally useful range)
 improved across the board.
 
+### Residual prediction (out = current radar + Δ)
+
+Addresses detail loss: instead of generating the future field from
+scratch, the network predicts only the change on top of the current
+frame in log space — input texture is conserved by construction
+(zero-init head ⇒ output == input, unit-tested).
+
+| lead | direct | **residual** | persistence | change |
+|---|---|---|---|---|
+| +5 min | 0.238 | 0.234 | 0.087 | parity |
+| +10 min | 0.163 | 0.163 | 0.047 | parity |
+| +15 min | 0.119 | 0.120 | 0.031 | +1% |
+| +20 min | 0.086 | **0.091** | 0.024 | +6% |
+| +30 min | 0.029 | **0.040** | 0.018 | **+38%** |
+| +45 min | 0.000 | **0.004** | 0.012 | recovered |
+| CSI@0.1 | 0.412 | **0.469** | 0.452 | **beats persistence** |
+
+Verdict: parity at short leads, large gains at long leads (+38% at
++30 min, +45 min recovered from zero), and light-rain CSI crosses
+above persistence for the first time (0.469 > 0.452). Rendered +5
+frames retain the input's granular cell texture instead of a smooth
+blob. This is the new default configuration.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
