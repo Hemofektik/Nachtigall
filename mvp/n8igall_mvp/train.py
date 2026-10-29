@@ -122,6 +122,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="U-Net encoder levels (3 = original, 4 = ~7M params)")
     p.add_argument("--loss", choices=("mse", "huber", "huber_csi"),
                    default="mse")
+    p.add_argument("--residual", action="store_true",
+                   help="predict a delta on top of the current radar frame "
+                        "(conserves input texture by construction)")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--wind", type=Path, default=None,
@@ -171,8 +174,10 @@ def main(argv: list[str] | None = None) -> int:
                    + (0 if wind_sampler is None else WIND_CHANNELS))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_channels = len(leads) if leads else 1
+    residual_from = (len(train_s[0].inputs) - 1) if args.residual else None
     model = UNet(in_channels, base=args.base_channels, depth=args.depth,
-                 out_channels=out_channels).to(device)
+                 out_channels=out_channels,
+                 residual_from=residual_from).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
@@ -219,11 +224,13 @@ def main(argv: list[str] | None = None) -> int:
             best = score
             torch.save({"model": model.state_dict(), "in_channels": in_channels,
                         "base": args.base_channels, "depth": args.depth,
+                        "residual_from": residual_from,
                         "leads": leads,
                         "val": val}, args.out / "best.pt")
 
     torch.save({"model": model.state_dict(), "in_channels": in_channels,
                 "base": args.base_channels, "depth": args.depth,
+                "residual_from": residual_from,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
     return 0

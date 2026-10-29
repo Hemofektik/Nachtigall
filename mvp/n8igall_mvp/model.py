@@ -31,8 +31,17 @@ def _block(cin: int, cout: int) -> nn.Sequential:
 
 class UNet(nn.Module):
     def __init__(self, in_channels: int, base: int = 32, depth: int = 3,
-                 out_channels: int = 1):
+                 out_channels: int = 1, residual_from: int | None = None):
+        """U-Net predicting log1p rain rates.
+
+        ``residual_from``: channel index of the "now" radar frame. When set,
+        the network predicts a *delta* on top of that frame
+        (``out = now + delta``) instead of generating the field from
+        scratch - input texture is conserved by construction and the model
+        only has to learn what changes. None = direct prediction.
+        """
         super().__init__()
+        self.residual_from = residual_from
         self.enc = nn.ModuleList()
         self.dec = nn.ModuleList()
         chans = [base * (2 ** i) for i in range(depth)]
@@ -58,6 +67,7 @@ class UNet(nn.Module):
         h, w = x.shape[-2:]
         ph = (mult - h % mult) % mult
         pw = (mult - w % mult) % mult
+        x_orig = x  # keep un-padded input for the residual path
         if ph or pw:
             x = F.pad(x, (0, pw, 0, ph))
 
@@ -72,7 +82,12 @@ class UNet(nn.Module):
             x = torch.cat([x, skips.pop()], dim=1)
             x = self.dec[i + 1](x)
         out = self.head(x)
-        return out[..., :h, :w]
+        out = out[..., :h, :w]
+        if self.residual_from is not None:
+            # delta prediction on top of the current radar frame (log1p space)
+            now = x_orig[:, self.residual_from:self.residual_from + 1]
+            out = now + out
+        return out
 
 
 def weighted_mse_loss(pred: torch.Tensor, target: torch.Tensor,
