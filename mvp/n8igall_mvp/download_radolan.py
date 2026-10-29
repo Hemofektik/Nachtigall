@@ -148,7 +148,12 @@ def download_yw(day: date, dest: Path, minutes: set[str]) -> int:
     # Slow path: monthly reproc tar (kept on disk while sibling days extract).
     month_tar = dest / f"YW2017.002_{day:%Y%m}.tar"
     if _fetch(YW_REPROC.format(year=day.year, month=day.month), month_tar):
-        return _extract(month_tar, dest, wanted)
+        try:
+            return _extract(month_tar, dest, wanted)
+        except tarfile.TarError:
+            month_tar.unlink(missing_ok=True)
+            print(f"  corrupt tar removed: {month_tar.name}", file=sys.stderr)
+            return 0
     return 0
 
 
@@ -168,7 +173,14 @@ def download_rw(day: date, dest: Path) -> int:
     month_tar = dest / f"RW{day:%Y%m}.tar"
     if _fetch(RW_MONTHLY.format(year=day.year, month=day.month), month_tar):
         wanted = _wanted_times(day, {"00"})
-        n = _extract(month_tar, dest, wanted)
+        try:
+            n = _extract(month_tar, dest, wanted)
+        except tarfile.TarError:
+            # Cached tar is corrupt/truncated - drop it so the next run
+            # re-downloads instead of failing forever on the same file.
+            month_tar.unlink(missing_ok=True)
+            print(f"  corrupt tar removed: {month_tar.name}", file=sys.stderr)
+            return 0
         month_tar.unlink(missing_ok=True)
         return n
     return 0
