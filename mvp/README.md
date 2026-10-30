@@ -270,6 +270,35 @@ statistic now within ~15% of actual, texture granularity slightly
 Remaining known gap: +20 min under-predicts extremes after calibration
 (max 4.4 vs 8.3) — quantile mapping cannot invent tail values.
 
+### Wind advection base + dense 5-min leads
+
+Motion was lost beyond +20 min (cross-fading static fields; MSE-family
+losses produce stationary blurred averages). Fix: residual base =
+now-frame semi-Lagrangian-warped by the 100 m wind over each lead, with
+a learnable per-lead scale; 12 output leads (5..60 step 5) so playback
+never blends across a gap.
+
+| lead | capped | **advect** | persistence |
+|---|---|---|---|
+| +5 min | 0.234 | 0.223 | 0.087 |
+| +10 min | 0.163 | 0.155 | 0.047 |
+| +15 min | 0.121 | 0.115 | 0.031 |
+| +20 min | 0.091 | 0.087 | 0.024 |
+| +30 min | 0.039 | **0.045** | 0.018 |
+| +45 min | 0.002 | **0.015** | 0.012 (**beats pers**) |
+| +60 min | 0.000 | **0.002** | 0.008 |
+
+Dense leads (advect only): +25 = 0.064, +35 = 0.032, +40 = 0.022,
++50 = 0.004, +55 = 0.003.
+
+Findings: short leads pay a small tax (~4%, 12 outputs share capacity),
+long leads gain a lot — **+45 min crosses above persistence for the
+first time** (0.015 vs 0.012), +30 +15%. Learned advect_scale lands at
+0.80–0.99 (100 m wind slightly *over*estimates the displacement that
+verifies on radar — sensible: precipitation lags the low-level flow).
+Rendered frames show the band translating through 25/35/45 min instead
+of fading in place.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
