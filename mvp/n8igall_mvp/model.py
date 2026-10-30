@@ -32,18 +32,37 @@ def _block(cin: int, cout: int) -> nn.Sequential:
 class UNet(nn.Module):
     def __init__(self, in_channels: int, base: int = 32, depth: int = 3,
                  out_channels: int = 1, residual_from: int | None = None,
-                 delta_cap: float | None = None):
+                 delta_cap: float | None = None,
+                 advect: dict | None = None):
         """U-Net predicting log1p rain rates.
 
         ``residual_from``: channel index of the "now" radar frame. When set,
         the network predicts a *delta* on top of that frame
-        (``out = now + delta``) instead of generating the field from
+        (``out = base + delta``) instead of generating the field from
         scratch - input texture is conserved by construction and the model
         only has to learn what changes. None = direct prediction.
+
+        ``advect``: {"u_idx", "v_idx", "leads": [...]} - when set (with
+        ``residual_from``), the residual base is the now-frame *warped by
+        the wind field over each lead time* (semi-Lagrangian sampling with
+        a learnable per-lead scale factor). Motion then exists by
+        construction; the network only learns growth/decay on top of the
+        advected field.
         """
         super().__init__()
         self.residual_from = residual_from
         self.delta_cap = delta_cap
+        self.advect_cfg = advect
+        if advect is not None:
+            assert residual_from is not None, "advect requires residual mode"
+            assert out_channels == len(advect["leads"]), \
+                "advect leads must match out_channels"
+            self.u_idx = advect["u_idx"]
+            self.v_idx = advect["v_idx"]
+            self.advect_leads = list(advect["leads"])
+            # learnable per-lead displacement scale (100 m wind underestimates
+            # the steering-level flow that actually moves precipitation)
+            self.advect_scale = nn.Parameter(torch.ones(len(self.advect_leads)))
         self.enc = nn.ModuleList()
         self.dec = nn.ModuleList()
         chans = [base * (2 ** i) for i in range(depth)]
@@ -61,6 +80,28 @@ class UNet(nn.Module):
             self.dec.append(_block(skip_ch * 2, skip_ch))
 
         self.head = nn.Conv2d(chans[0], out_channels, 1)
+
+    def _advect(self, now: torch.Tensor, u: torch.Tensor,
+                v: torch.Tensor, lead_min: float, lead_i: int) -> torch.Tensor:
+        """Semi-Lagrangian warp of ``now`` by wind (u,v) over ``lead_min``.
+
+        u: eastward m/s, v: northward m/s; cell = 1000 m; row 0 = north.
+        Destination (r,c) samples the source position the parcel came from:
+        src_col = c - u*dt/1000*scale, src_row = r + v*dt/1000*scale.
+        """
+        scale = self.advect_scale[lead_i]
+        dt = float(lead_min) * 60.0
+        dx = -u * (dt / 1000.0) * scale   # source offset, east positive
+        dy = v * (dt / 1000.0) * scale    # source offset, south positive
+        _, _, h, w = now.shape
+        cs = torch.arange(w, device=now.device, dtype=now.dtype)
+        rs = torch.arange(h, device=now.device, dtype=now.dtype)
+        rr, cc = torch.meshgrid(rs, cs, indexing="ij")   # [H,W]
+        x_n = 2.0 * (cc.unsqueeze(0) + dx.squeeze(1) + 0.5) / w - 1.0
+        y_n = 2.0 * (rr.unsqueeze(0) + dy.squeeze(1) + 0.5) / h - 1.0
+        grid = torch.stack([x_n, y_n], dim=-1)           # [B,H,W,2]
+        return F.grid_sample(now, grid, mode="bilinear",
+                             padding_mode="border", align_corners=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Pooling floors odd sizes (900 -> 450 -> 225 -> 112), breaking
@@ -86,13 +127,21 @@ class UNet(nn.Module):
         out = self.head(x)
         out = out[..., :h, :w]
         if self.residual_from is not None:
-            # delta prediction on top of the current radar frame (log1p space)
+            # residual base: the now-frame, optionally advected per lead
             now = x_orig[:, self.residual_from:self.residual_from + 1]
+            if self.advect_cfg is not None:
+                u = x_orig[:, self.u_idx:self.u_idx + 1]
+                v = x_orig[:, self.v_idx:self.v_idx + 1]
+                base = torch.cat(
+                    [self._advect(now, u, v, L, i)
+                     for i, L in enumerate(self.advect_leads)], dim=1)
+            else:
+                base = now
             if self.delta_cap is not None:
                 # hard bound on the delta: the prediction can never exceed
-                # expm1(now + cap) mm/h, killing hallucinated spikes
+                # expm1(base + cap) mm/h, killing hallucinated spikes
                 out = self.delta_cap * torch.tanh(out / self.delta_cap)
-            out = now + out
+            out = base + out
         return out
 
 

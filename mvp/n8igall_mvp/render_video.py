@@ -66,19 +66,21 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
                            wind.channels_for(t), static], axis=0)
 
 
-def pred_at_lead(pred_all: np.ndarray, lead: int) -> np.ndarray:
+def pred_at_lead(pred_all: np.ndarray, lead: int,
+                 leads: list[int] | None = None) -> np.ndarray:
     """Model output at minute ``lead``, linearly interpolated between the
     discrete lead channels (identity at lead 0: the input frame itself)."""
+    leads = leads or ALL_LEADS
     if lead <= 0:
         return pred_all[0] * 0.0  # replaced by input frame by caller
-    if lead in ALL_LEADS:
-        return pred_all[ALL_LEADS.index(lead)]
+    if lead in leads:
+        return pred_all[leads.index(lead)]
     # linear interpolation between bracketing leads
-    lo = max(l for l in ALL_LEADS if l < lead)
-    hi = min(l for l in ALL_LEADS if l > lead)
+    lo = max(l for l in leads if l < lead)
+    hi = min(l for l in leads if l > lead)
     w = (lead - lo) / (hi - lo)
-    return pred_all[ALL_LEADS.index(lo)] * (1 - w) + \
-        pred_all[ALL_LEADS.index(hi)] * w
+    return pred_all[leads.index(lo)] * (1 - w) + \
+        pred_all[leads.index(hi)] * w
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,11 +109,13 @@ def main(argv: list[str] | None = None) -> int:
     t = args.start
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
+    model_leads = ckpt.get("leads") or ALL_LEADS
     model = UNet(ckpt["in_channels"], base=ckpt["base"],
                  depth=ckpt.get("depth", 3),
-                 out_channels=len(ckpt.get("leads") or ALL_LEADS),
+                 out_channels=len(model_leads),
                  residual_from=ckpt.get("residual_from"),
-                 delta_cap=ckpt.get("delta_cap"))
+                 delta_cap=ckpt.get("delta_cap"),
+                 advect=ckpt.get("advect"))
     model.load_state_dict(ckpt["model"])
     model.eval()
 
@@ -159,8 +163,9 @@ def main(argv: list[str] | None = None) -> int:
         if lead == 0:
             predicted = input_now
         else:
-            predicted = np.expm1(np.clip(pred_at_lead(pred_all, lead),
-                                         0, None)) * args.bias_correction
+            predicted = np.expm1(np.clip(
+                pred_at_lead(pred_all, lead, model_leads), 0, None)) \
+                * args.bias_correction
             if calib is not None:
                 # Per-lead quantile mapping in log space. The model only
                 # produces discrete leads (5,10,15,20,30,45,60); playback
@@ -168,8 +173,10 @@ def main(argv: list[str] | None = None) -> int:
                 # interpolate the calibration curves too - otherwise those
                 # frames render raw (exploding) output while neighbours are
                 # calibrated, causing visible pops.
-                lo = max((l for l in ALL_LEADS if l <= lead), default=ALL_LEADS[0])
-                hi = min((l for l in ALL_LEADS if l >= lead), default=ALL_LEADS[-1])
+                lo = max((l for l in model_leads if l <= lead),
+                         default=model_leads[0])
+                hi = min((l for l in model_leads if l >= lead),
+                         default=model_leads[-1])
                 if lo == hi:
                     pq, aq = calib[f"p{lo}"], calib[f"a{lo}"]
                 else:

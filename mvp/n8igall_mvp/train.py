@@ -136,6 +136,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--delta-cap", type=float, default=None,
                    help="hard bound on the residual delta in log1p units "
                         "(e.g. 3.0 caps prediction at expm1(now+3))")
+    p.add_argument("--advect", action="store_true",
+                   help="warp the residual base by the 100m wind field over "
+                        "each lead time (motion by construction); requires "
+                        "--residual, --wind and multi-lead outputs")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--wind", type=Path, default=None,
@@ -186,10 +190,20 @@ def main(argv: list[str] | None = None) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_channels = len(leads) if leads else 1
     residual_from = (len(train_s[0].inputs) - 1) if args.residual else None
+    advect_cfg = None
+    if args.advect:
+        if not (args.residual and args.wind and leads):
+            raise SystemExit("--advect requires --residual --wind and --leads")
+        # wind channels sit right after the radar history: u10, v10, u100,
+        # v100, upslope, div (see wind.N_CHANNELS / dataset.load_sample)
+        n_radar = len(train_s[0].inputs)
+        advect_cfg = {"u_idx": n_radar + 2, "v_idx": n_radar + 3,
+                      "leads": leads}
     model = UNet(in_channels, base=args.base_channels, depth=args.depth,
                  out_channels=out_channels,
                  residual_from=residual_from,
-                 delta_cap=args.delta_cap).to(device)
+                 delta_cap=args.delta_cap,
+                 advect=advect_cfg).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
@@ -238,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                         "base": args.base_channels, "depth": args.depth,
                         "residual_from": residual_from,
                         "delta_cap": args.delta_cap,
+                        "advect": advect_cfg,
                         "leads": leads,
                         "val": val}, args.out / "best.pt")
 
@@ -245,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
                 "base": args.base_channels, "depth": args.depth,
                 "residual_from": residual_from,
                 "delta_cap": args.delta_cap,
+                "advect": advect_cfg,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
     return 0

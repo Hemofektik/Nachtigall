@@ -35,7 +35,8 @@ def main(argv: list[str] | None = None) -> int:
                  depth=ckpt.get("depth", 3),
                  out_channels=out_channels,
                  residual_from=ckpt.get("residual_from"),
-                 delta_cap=ckpt.get("delta_cap"))
+                 delta_cap=ckpt.get("delta_cap"),
+                 advect=ckpt.get("advect"))
     model.load_state_dict(ckpt["model"])
     model.eval()
 
