@@ -161,11 +161,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             predicted = np.expm1(np.clip(pred_at_lead(pred_all, lead),
                                          0, None)) * args.bias_correction
-            if calib is not None and f"p{lead}" in calib:
-                # per-lead quantile mapping in log space
-                predicted = np.expm1(np.interp(np.log1p(predicted),
-                                               calib[f"p{lead}"],
-                                               calib[f"a{lead}"]))
+            if calib is not None:
+                # Per-lead quantile mapping in log space. The model only
+                # produces discrete leads (5,10,15,20,30,45,60); playback
+                # frames at 25/35/40/50/55 are interpolated predictions, so
+                # interpolate the calibration curves too - otherwise those
+                # frames render raw (exploding) output while neighbours are
+                # calibrated, causing visible pops.
+                lo = max((l for l in ALL_LEADS if l <= lead), default=ALL_LEADS[0])
+                hi = min((l for l in ALL_LEADS if l >= lead), default=ALL_LEADS[-1])
+                if lo == hi:
+                    pq, aq = calib[f"p{lo}"], calib[f"a{lo}"]
+                else:
+                    w = (lead - lo) / (hi - lo)
+                    pq = calib[f"p{lo}"] * (1 - w) + calib[f"p{hi}"] * w
+                    aq = calib[f"a{lo}"] * (1 - w) + calib[f"a{hi}"] * w
+                predicted = np.expm1(np.interp(np.log1p(predicted), pq, aq))
         frames_data.append((lead, valid_t, measured, predicted, valid))
 
     def draw(i: int) -> None:
