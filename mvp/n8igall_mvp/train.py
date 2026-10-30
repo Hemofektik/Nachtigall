@@ -47,11 +47,13 @@ def make_loss(name: str):
 class RadolanDataset(Dataset):
     def __init__(self, samples: list[Sample], crop: int | None = 512,
                  static_channels: np.ndarray | None = None,
-                 wind_sampler=None, leads: list[int] | None = None):
+                 wind_sampler=None, leads: list[int] | None = None,
+                 cloud_sampler=None):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
         self.wind = wind_sampler       # WindSampler or None
+        self.cloud = cloud_sampler     # CloudSampler or None
         self.leads = leads              # multi-lead target minutes or None
 
     def __len__(self) -> int:
@@ -62,6 +64,15 @@ class RadolanDataset(Dataset):
                                  leads=self.leads)
         if self.static is not None:
             x = np.concatenate([x, self.static], axis=0)
+        if self.cloud is not None:
+            # appended LAST so radar/wind/static channel indices (used by
+            # residual_from and advect u/v) remain unchanged
+            from datetime import datetime as _dt
+            import re as _re
+            ts = _re.search(r"-(\d{10})-",
+                            self.samples[idx].inputs[-1]).group(1)
+            t_now = _dt.strptime(ts, "%y%m%d%H%M")
+            x = np.concatenate([x, self.cloud.channels_for(t_now)], axis=0)
         if self.crop:
             _, h, w = x.shape
             r = random.randint(0, h - self.crop)
@@ -142,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
                         "--residual, --wind and multi-lead outputs")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
+    p.add_argument("--cloud", type=Path, default=None,
+                   help=".npz cloud store (era5_cloud.npz) to add cloud channels")
     p.add_argument("--wind", type=Path, default=None,
                    help=".npz wind store (era5_wind.npz) to add wind channels")
     p.add_argument("--num-workers", type=int, default=4)
@@ -173,10 +186,17 @@ def main(argv: list[str] | None = None) -> int:
         elevation = (np.load(args.static)["elevation"] if args.static else None)
         wind_sampler = WindSampler(args.wind, elevation=elevation)
 
+    cloud_sampler = None
+    if args.cloud:
+        from .cloud import CloudSampler
+        cloud_sampler = CloudSampler(args.cloud)
+
     train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static,
-                              wind_sampler=wind_sampler, leads=leads)
+                              wind_sampler=wind_sampler, leads=leads,
+                              cloud_sampler=cloud_sampler)
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
-                            wind_sampler=wind_sampler, leads=leads)
+                            wind_sampler=wind_sampler, leads=leads,
+                              cloud_sampler=cloud_sampler)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, drop_last=True,
                           persistent_workers=args.num_workers > 0)
@@ -186,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     from .wind import N_CHANNELS as WIND_CHANNELS
     in_channels = (len(train_s[0].inputs)
                    + (0 if static is None else static.shape[0])
-                   + (0 if wind_sampler is None else WIND_CHANNELS))
+                   + (0 if wind_sampler is None else WIND_CHANNELS)
+                   + (0 if cloud_sampler is None else 3))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_channels = len(leads) if leads else 1
     residual_from = (len(train_s[0].inputs) - 1) if args.residual else None
