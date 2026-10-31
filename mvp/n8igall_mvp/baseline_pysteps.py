@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                     out[f"brier_lead{L}_{t}{tag}"] = st["brier"] / st["n"]
                     for s_ in FSS_SIZES:
                         d = st["fss_den"].get(s_, 0.0)
-                        out[f"fss_lead{L}_{t}{tag}_{s_}"] = (
+                        out[f"fss_lead{L}_{t}_{s_}{tag}"] = (
                             1.0 - st["fss_mse"].get(s_, 0.0) / d) if d else None
 
     text = json.dumps(out, indent=2)

@@ -148,6 +148,35 @@ bugs above.
 
 ## Results
 
+> **⚠ All model results below predate the four data-integrity fixes**
+> (three reader bugs + the raw-vs-log1p target bug) and are **invalid for
+> absolute numbers** — see the "Data integrity" section. They remain only
+> as a record of internally-comparable A/B tests. The first *trustworthy*
+> numbers are the baselines in the next section, measured on the fixed
+> pipeline.
+
+### Fixed-pipeline baselines (2026-10-31, first trustworthy numbers)
+
+Measured on the same chronological val split (585 samples, last 20 % of
+Jun–Sep 2024) with the new pooled CSI / FSS metrics, after all four fixes:
+
+| Lead | Persistence CSI@1.0 | Optical-flow CSI@1.0 | Persistence CSI@0.1 | Flow CSI@0.1 | Flow FSS@50km (1.0) |
+|---|---|---|---|---|---|
+| +5 min | **0.630** | **0.740** | 0.765 | 0.844 | 0.996 |
+| +15 min | 0.471 | 0.571 | 0.612 | 0.715 | 0.977 |
+| +30 min | 0.382 | 0.449 | 0.522 | 0.603 | 0.932 |
+| +45 min | 0.334 | 0.377 | 0.471 | 0.533 | 0.882 |
+| +60 min | 0.293 | 0.330 | 0.448 | 0.488 | 0.833 |
+
+* **The reviewer's hunch was right**: persistence +5 min CSI@1.0 is
+  **0.630 pooled** on the fixed pipeline vs **0.087** in the buggy runs —
+  7× higher. The old "suspiciously low persistence" was the reader +
+  target-space bugs, not speckle.
+* **Optical flow (pysteps Lucas-Kanade) beats persistence at every lead**
+  and every threshold — this is the honest baseline the model must beat.
+* Full table incl. CSI@5 and Brier: `runs/baseline_pysteps.json`
+  (585/585 samples, 0 flow failures).
+
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
 
 Same period, same seeds, same 80/20 chronological split, same 10 epochs,
