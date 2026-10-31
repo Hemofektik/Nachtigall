@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from scipy.ndimage import uniform_filter
 from torch.utils.data import DataLoader, Dataset
 
 from .dataset import Sample, load_sample
@@ -83,19 +84,68 @@ class RadolanDataset(Dataset):
         return (torch.from_numpy(x), torch.from_numpy(y), torch.from_numpy(mask))
 
 
+FSS_SIZES = (10, 20, 50)  # neighbourhood widths in pixels (~km at 1 km grid)
+
+
+def _binary_stats(pred: np.ndarray, obs: np.ndarray, mask: np.ndarray) -> dict:
+    """Accumulate pooled contingency counts, Brier sum and FSS terms.
+
+    ``pred``/``obs`` are boolean exceedance maps [B,H,W], ``mask`` validity.
+    Pooled counts avoid the nanmean-of-per-sample-CSI bias (all-dry samples
+    contribute nothing instead of being dropped); FSS scores neighbourhood
+    fractions so a spatially displaced forecast still earns partial credit.
+    """
+    p, o = pred & mask, obs & mask
+    st = {"hits": int((p & o).sum()), "fa": int((p & ~o).sum()),
+          "miss": int((~p & o).sum()), "n": int(mask.sum()),
+          "brier": 0.0, "fss_mse": {}, "fss_den": {}}
+    if st["n"] == 0:
+        return st
+    st["brier"] = float(((p.astype(np.float64) - o.astype(np.float64)) ** 2).sum())
+    mf = mask.astype(np.float32)
+    pf, of = p.astype(np.float32), o.astype(np.float32)
+    for s in FSS_SIZES:
+        size = min(s, min(mf.shape[-2:]))
+        nb = np.maximum(uniform_filter(mf, size=size, mode="constant"), 1e-6)
+        fp = uniform_filter(pf, size=size, mode="constant") / nb
+        fo = uniform_filter(of, size=size, mode="constant") / nb
+        st["fss_mse"][s] = float((((fp - fo) ** 2) * mf).sum())
+        st["fss_den"][s] = float(((fp ** 2 + fo ** 2) * mf).sum())
+    return st
+
+
+def _merge(acc: dict, st: dict) -> None:
+    for k in ("hits", "fa", "miss", "n"):
+        acc[k] = acc.get(k, 0) + st[k]
+    acc["brier"] = acc.get("brier", 0.0) + st["brier"]
+    for s in FSS_SIZES:
+        acc.setdefault("fss_mse", {})[s] = acc.get("fss_mse", {}).get(s, 0.0) + st["fss_mse"].get(s, 0.0)
+        acc.setdefault("fss_den", {})[s] = acc.get("fss_den", {}).get(s, 0.0) + st["fss_den"].get(s, 0.0)
+
+
 def evaluate(model, loader, device, radar_channels: int,
              leads: list[int] | None = None,
              thresholds=(0.1, 1.0, 5.0)) -> dict:
-    """Evaluate CSI vs a persistence baseline, per lead time.
+    """Evaluate vs a persistence baseline, per lead time.
 
-    ``radar_channels`` is the number of leading radar-history channels in the
-    input tensor; persistence uses the most recent radar frame (not any static
-    channels that may follow it).
+    Reports three CSI variants per (lead, threshold):
+
+    * ``csi_lead{L}_{t}`` — nanmean of per-sample CSI (legacy; kept for
+      checkpoint-selection compatibility),
+    * ``csi_lead{L}_{t}_pooled`` — hits/misses/false alarms pooled over the
+      whole set (stable; all-dry samples don't distort it),
+    * plus Brier score (``brier_...``) and fractions skill score at 10/20/50
+      km neighbourhoods (``fss_..._{s}``), each with a ``_pers`` twin.
+
+    ``radar_channels`` is the number of leading radar-history channels;
+    persistence uses the most recent radar frame.
     """
     leads = leads or [60]
     model.eval()
     csi_model = {(L, t): [] for L in leads for t in thresholds}
     csi_pers = {(L, t): [] for L in leads for t in thresholds}
+    pooled = {("m", L, t): {} for L in leads for t in thresholds}
+    pooled.update({("p", L, t): {} for L in leads for t in thresholds})
     loss_sum, n = 0.0, 0
     with torch.no_grad():
         for x, y, mask in loader:
@@ -106,8 +156,18 @@ def evaluate(model, loader, device, radar_channels: int,
             last_radar = torch.expm1(x[:, radar_channels - 1])  # [B,H,W]
             y_rate = torch.expm1(y)
             pred_rate = torch.expm1(pred.clamp(min=0))
+            y_np, m_np = y_rate.cpu().numpy(), mask.cpu().numpy().astype(bool)
+            p_np = pred_rate.cpu().numpy()
+            r_np = last_radar.cpu().numpy()
             for i, L in enumerate(leads):
                 for t in thresholds:
+                    obs_t = (y_np[:, i] > t) & m_np[:, i]
+                    pred_t = (p_np[:, i] > t) & m_np[:, i]
+                    pers_t = (r_np > t) & m_np[:, i]
+                    _merge(pooled[("m", L, t)],
+                           _binary_stats(pred_t, obs_t, m_np[:, i]))
+                    _merge(pooled[("p", L, t)],
+                           _binary_stats(pers_t, obs_t, m_np[:, i]))
                     csi_model[(L, t)].append(
                         csi(pred_rate[:, i], y_rate[:, i], mask[:, i], t))
                     csi_pers[(L, t)].append(
@@ -118,6 +178,16 @@ def evaluate(model, loader, device, radar_channels: int,
             key = f"csi_lead{L}_{t}"
             out[key] = float(np.nanmean(csi_model[(L, t)]))
             out[f"{key}_pers"] = float(np.nanmean(csi_pers[(L, t)]))
+            for who, tag in (("m", ""), ("p", "_pers")):
+                st = pooled[(who, L, t)]
+                den = st["hits"] + st["fa"] + st["miss"]
+                out[f"{key}_pooled{tag}"] = (st["hits"] / den) if den else float("nan")
+                if st["n"]:
+                    out[f"brier_lead{L}_{t}{tag}"] = st["brier"] / st["n"]
+                    for s in FSS_SIZES:
+                        d = st["fss_den"].get(s, 0.0)
+                        out[f"fss_lead{L}_{t}_{s}{tag}"] = (
+                            1.0 - st["fss_mse"].get(s, 0.0) / d) if d else float("nan")
     # Legacy keys point at the primary lead (last entry) for comparability.
     primary = leads[-1]
     for t in thresholds:

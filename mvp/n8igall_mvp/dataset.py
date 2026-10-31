@@ -82,8 +82,11 @@ def load_sample(sample: Sample,
     Returns:
         x: float32 [C, H, W] log1p radar history (+ optional wind channels),
            invalid pixels = 0
-        y: float32 [C_out, H, W] target rate (mm/h), invalid pixels = 0
+        y: float32 [C_out, H, W] target log1p(rate), invalid pixels = 0
         mask: bool [C_out, H, W] target validity mask
+
+    Both ``x`` and ``y`` are log1p(rate): the model predicts log1p space and
+    every loss/metric consumer (``expm1(y)``, ``log1p(threshold)``) assumes it.
     """
     frames = [read_frame(p) for p in sample.inputs]
     x = np.stack([np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0)
@@ -97,7 +100,7 @@ def load_sample(sample: Sample,
 
     if leads is None:
         tgt = read_frame(sample.target)
-        y = np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0)[None].astype(np.float32)
+        y = np.log1p(np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0))[None].astype(np.float32)
         mask = tgt.valid[None]
         return x, y, mask
 
@@ -115,7 +118,7 @@ def load_sample(sample: Sample,
         except FileNotFoundError:
             ys.append(np.zeros(x.shape[-2:], dtype=np.float32))
             ms.append(np.zeros(x.shape[-2:], dtype=bool))
-    return x, np.stack(ys).astype(np.float32), np.stack(ms)
+    return x, np.log1p(np.stack(ys)).astype(np.float32), np.stack(ms)
 
 
 def main(argv: list[str] | None = None) -> int:

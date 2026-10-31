@@ -120,6 +120,32 @@ Verification scripts live in the session notes; the three checks above
 (classic↔HDF5 corr, flood-vs-ERA5, YW×12 vs HDF5) are the acceptance
 tests for any future reader change.
 
+### Fourth bug: targets were raw mm/h, not log1p (fixed 2026-10-31)
+
+Found while upgrading `evaluate()`: `load_sample` returned `y` as **raw
+mm/h**, but every consumer assumed **log1p(rate)** — the model docstring,
+`soft_csi_loss` (`th = log1p(threshold)`), `rate_explosion_penalty`
+(`expm1(target)`), `evaluate()` (`expm1(y)`), and the render/ONNX
+docstrings. `git log -S log1p` confirmed `y` was never log1p-transformed
+since the first commit. Consequences with raw targets:
+
+* `expm1(y)` on values up to 72.8 → overflow-scale rates (probe: max
+  4.3e31), so explosion penalties and CSI thresholds were meaningless.
+* CSI target threshold became `ln(2)≈0.69` instead of `1.0` mm/h, while
+  persistence's own frame stayed correctly scaled — asymmetrically
+  inflating persistence misses (the reviewer's "suspiciously low
+  persistence" hunch).
+* In residual mode (`pred = base(log1p now) + delta`, `delta_cap=1.5`)
+  the model literally could not fit raw targets up to 72.
+
+Fix: `dataset.py` now applies `np.log1p` on both the RW path and the
+multi-lead YW path. Verified: `y max = 4.30`, `expm1(y) max = 72.84`.
+The first `advect_cloud` relaunch (PID 209827) had loaded the stale
+module at startup and trained on raw targets for ~43 min; it was killed
+and relaunched on the fixed code. **Any checkpoint produced before this
+fix is invalid for absolute numbers** — same blast radius as the reader
+bugs above.
+
 ## Results
 
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
