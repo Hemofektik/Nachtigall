@@ -66,6 +66,60 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/mo
 * **Next inputs** (per research doc §4.4): ICON-D2 wind fields + derived
   orographic upslope/convergence features.
 
+## Data integrity: three reader bugs (fixed 2026-10-31)
+
+A review flagged "persistence CSI suspiciously low at +5 min"; the
+investigation found three real bugs in `radolan.py`'s classic-binary
+reader. The coordinate specs themselves were correct all along — the
+projection, corners and `GP` token fully determine georeferencing; the
+bugs were in how the reader interpreted them:
+
+1. **Wrong crop for the extended grid.** RADKLIM reproc YW ships on the
+   1100×900 `normal_wx` grid (`j_0=370, i_0=550`), which sits **+80 km
+   east / −100 km south** of the national `rx` grid — not centered on
+   it. The old reader took a centered crop, shifting every input 80 km
+   west and 100 km south of where it belongs. Spec-exact crop
+   (`rows[100:1000]`, national col *n* ← payload col *n*−80) verified:
+   classic↔HDF5 rain correlation at zero shift went from ≈0.0 to 0.896.
+2. **Wrong row order.** Classic payload rows are stored **south-first**
+   (wradlib: `y_arr` ascending, first line = bottom row); ODIM HDF5 is
+   north-up. The reader now flips classic frames to north-up. Verified
+   by the Jun 2024 Bavaria flood: radar at Cham now correlates +0.65
+   with ERA5 hourly precipitation (peak hour exact) vs −0.09 before;
+   the vertically mirrored row contains no rain at all.
+3. **Wrong YW units.** Classic YW values are 0.01 mm/**5 min**
+   accumulations (`PR E-02`), not mm/h rates; HDF5 YW is already
+   mm/h. The reader now scales ×12. Verified: classic YW ×12 vs
+   HDF5 RATE at the same timestamp → ratio 0.96; without the factor
+   the ratio is 0.08. (Sum-of-YW vs RW stays 0.65–0.75 even when
+   aligned — a YW/RW reproc processing difference, ~15 % of RW-valid
+   pixels are YW-invalid — not a reader bug.)
+
+**Blast radius — every run in this file predates the fix:**
+
+* All runs used classic YW inputs that were **vertically flipped**
+  relative to the DEM/wind/cloud channels and (for reproc months)
+  shifted 80 km west. Radar-vs-static misalignment was systematic.
+* RW-target runs (`leads=None`) additionally had input-vs-target
+  misalignment (RW was read correctly on the 900×900 grid; inputs
+  were not).
+* YW-target runs (all multi-lead runs) trained against targets that
+  were **12× too small** — every mm/h threshold (0.1/1/5) was
+  effectively 12× stricter. This explains the "suspiciously low"
+  persistence baseline: persistence was scored against near-zero
+  targets.
+* **Internally-valid comparisons** (same bug on both arms): the A/B
+  spacing test and single-seed repeats remain directionally valid —
+  the bug is constant across arms. **Absolute numbers, cross-source
+  claims (HDF5 vs classic), videos (flipped radar vs DEM) and any
+  threshold-based conclusion are invalid** and must be re-run.
+* `advect_cloud` (killed mid-epoch-3 by the 2026-10-31 power outage)
+  trained on the buggy reader; relaunched after the fix.
+
+Verification scripts live in the session notes; the three checks above
+(classic↔HDF5 corr, flood-vs-ERA5, YW×12 vs HDF5) are the acceptance
+tests for any future reader change.
+
 ## Results
 
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
