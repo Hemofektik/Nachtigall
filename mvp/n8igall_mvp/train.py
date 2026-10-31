@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from scipy.ndimage import uniform_filter
 from torch.utils.data import DataLoader, Dataset
 
@@ -90,10 +91,8 @@ FSS_SIZES = (10, 20, 50)  # neighbourhood widths in pixels (~km at 1 km grid)
 def _binary_stats(pred: np.ndarray, obs: np.ndarray, mask: np.ndarray) -> dict:
     """Accumulate pooled contingency counts, Brier sum and FSS terms.
 
-    ``pred``/``obs`` are boolean exceedance maps [B,H,W], ``mask`` validity.
-    Pooled counts avoid the nanmean-of-per-sample-CSI bias (all-dry samples
-    contribute nothing instead of being dropped); FSS scores neighbourhood
-    fractions so a spatially displaced forecast still earns partial credit.
+    NumPy variant used by offline baselines (``baseline_pysteps``); the
+    in-training ``evaluate`` uses the batched GPU version below.
     """
     p, o = pred & mask, obs & mask
     st = {"hits": int((p & o).sum()), "fa": int((p & ~o).sum()),
@@ -123,29 +122,59 @@ def _merge(acc: dict, st: dict) -> None:
         acc.setdefault("fss_den", {})[s] = acc.get("fss_den", {}).get(s, 0.0) + st["fss_den"].get(s, 0.0)
 
 
+def _box_sum(x: torch.Tensor, size: int) -> torch.Tensor:
+    """Sum over a size x size window with zero padding, preserving shape.
+
+    ``x`` is [N,H,W]; returns [N,H,W]. Equivalent to
+    ``scipy.ndimage.uniform_filter(x, size, mode="constant") * size**2``
+    but batched on GPU — the CPU path cost ~87 min per validation pass.
+    scipy's window for even ``size`` extends ``size//2`` to the left and
+    ``size - 1 - size//2`` to the right (origin=0), so we match that.
+    """
+    pl = size // 2
+    pr = size - 1 - pl
+    y = F.pad(x[:, None], (pl, pr, pl, pr))
+    return F.avg_pool2d(y, size, stride=1)[:, 0] * float(size * size)
+
+
 def evaluate(model, loader, device, radar_channels: int,
              leads: list[int] | None = None,
-             thresholds=(0.1, 1.0, 5.0)) -> dict:
+             thresholds=(0.1, 1.0, 5.0),
+             full_metrics: bool = False) -> dict:
     """Evaluate vs a persistence baseline, per lead time.
 
-    Reports three CSI variants per (lead, threshold):
+    Always reports the legacy nanmean CSI keys (``csi_lead{L}_{t}``,
+    ``csi_{t}``, ``csi_persistence_{t}``) — cheap and used for checkpoint
+    selection.
 
-    * ``csi_lead{L}_{t}`` — nanmean of per-sample CSI (legacy; kept for
-      checkpoint-selection compatibility),
+    With ``full_metrics=True`` also reports:
+
     * ``csi_lead{L}_{t}_pooled`` — hits/misses/false alarms pooled over the
       whole set (stable; all-dry samples don't distort it),
-    * plus Brier score (``brier_...``) and fractions skill score at 10/20/50
+    * Brier score (``brier_...``) and fractions skill score at 10/20/50
       km neighbourhoods (``fss_..._{s}``), each with a ``_pers`` twin.
+
+    The FSS box filters cost ~30 GPU passes per batch (~30 min per 585
+    sample pass), so the training loop uses ``full_metrics=False`` each
+    epoch and computes the full set once on the best checkpoint.
 
     ``radar_channels`` is the number of leading radar-history channels;
     persistence uses the most recent radar frame.
     """
     leads = leads or [60]
     model.eval()
+    n_leads = len(leads)
     csi_model = {(L, t): [] for L in leads for t in thresholds}
     csi_pers = {(L, t): [] for L in leads for t in thresholds}
-    pooled = {("m", L, t): {} for L in leads for t in thresholds}
-    pooled.update({("p", L, t): {} for L in leads for t in thresholds})
+    # pooled accumulators as python scalars: (who, lead_idx, thr) -> dict
+    acc = {}
+    for who in ("m", "p"):
+        for i in range(n_leads):
+            for t in thresholds:
+                acc[(who, i, t)] = {"hits": 0, "fa": 0, "miss": 0, "n": 0,
+                                    "brier": 0.0,
+                                    "fss_mse": {s: 0.0 for s in FSS_SIZES},
+                                    "fss_den": {s: 0.0 for s in FSS_SIZES}}
     loss_sum, n = 0.0, 0
     with torch.no_grad():
         for x, y, mask in loader:
@@ -154,32 +183,78 @@ def evaluate(model, loader, device, radar_channels: int,
             loss_sum += weighted_mse_loss(pred, y, mask).item() * y.shape[0]
             n += y.shape[0]
             last_radar = torch.expm1(x[:, radar_channels - 1])  # [B,H,W]
-            y_rate = torch.expm1(y)
+            y_rate = torch.expm1(y)                             # [B,L,H,W]
             pred_rate = torch.expm1(pred.clamp(min=0))
-            y_np, m_np = y_rate.cpu().numpy(), mask.cpu().numpy().astype(bool)
-            p_np = pred_rate.cpu().numpy()
-            r_np = last_radar.cpu().numpy()
+            m = mask.bool()
+            B = x.shape[0]
+
+            # legacy per-sample CSI (cheap, stays on device)
             for i, L in enumerate(leads):
                 for t in thresholds:
-                    obs_t = (y_np[:, i] > t) & m_np[:, i]
-                    pred_t = (p_np[:, i] > t) & m_np[:, i]
-                    pers_t = (r_np > t) & m_np[:, i]
-                    _merge(pooled[("m", L, t)],
-                           _binary_stats(pred_t, obs_t, m_np[:, i]))
-                    _merge(pooled[("p", L, t)],
-                           _binary_stats(pers_t, obs_t, m_np[:, i]))
                     csi_model[(L, t)].append(
                         csi(pred_rate[:, i], y_rate[:, i], mask[:, i], t))
                     csi_pers[(L, t)].append(
                         csi(last_radar, y_rate[:, i], mask[:, i], t))
+
+            # pooled counts + Brier (vectorized over batch and leads)
+            pers = last_radar[:, None].expand(-1, n_leads, -1, -1)  # [B,L,H,W]
+            if full_metrics:
+                for who, fr in (("m", pred_rate), ("p", pers)):
+                    for t in thresholds:
+                        o = (y_rate > t) & m
+                        f = (fr > t) & m
+                        for i in range(n_leads):
+                            ai = acc[(who, i, t)]
+                            oi, fi, mi = o[:, i], f[:, i], m[:, i]
+                            ai["hits"] += int((fi & oi).sum())
+                            ai["fa"] += int((fi & ~oi).sum())
+                            ai["miss"] += int((~fi & oi).sum())
+                            ai["n"] += int(mi.sum())
+                            ai["brier"] += float(
+                                ((fi.float() - oi.float()) ** 2 * mi.float()).sum())
+                # FSS neighbourhood fractions (batched GPU box sums).
+                # Flatten batch x leads so each (thr, scale, who) is ONE
+                # box-filter call; obs fractions and mask denominators are
+                # shared between model and persistence. 30 calls/batch.
+                yf = y_rate.flatten(0, 1)
+                pf_ = pred_rate.flatten(0, 1)
+                rf = pers.flatten(0, 1)
+                mb_flat = m.flatten(0, 1)          # bool, for masking
+                mf_flat = mb_flat.float()          # float, for box sums
+                nm_cache = {}
+                for s in FSS_SIZES:
+                    sz = min(s, yf.shape[-2], yf.shape[-1])
+                    nm_cache[s] = _box_sum(mf_flat, sz).clamp(min=1e-6)
+                for t in thresholds:
+                    o = ((yf > t) & mb_flat).float()
+                    fo_all = {}
+                    for s in FSS_SIZES:
+                        sz = min(s, yf.shape[-2], yf.shape[-1])
+                        fo_all[s] = _box_sum(o, sz) / nm_cache[s]
+                    for who, fr in (("m", pf_), ("p", rf)):
+                        f = ((fr > t) & mb_flat).float()
+                        for s in FSS_SIZES:
+                            sz = min(s, yf.shape[-2], yf.shape[-1])
+                            ff_ = _box_sum(f, sz) / nm_cache[s]
+                            fo_ = fo_all[s]
+                            mse = (((fo_ - ff_) ** 2) * mf_flat).reshape(B, n_leads, *yf.shape[-2:])
+                            den = ((ff_ ** 2 + fo_ ** 2) * mf_flat).reshape(B, n_leads, *yf.shape[-2:])
+                            mse_l = mse.sum(dim=0)   # [L,H,W] -> sum over batch
+                            den_l = den.sum(dim=0)
+                            for i in range(n_leads):
+                                a = acc[(who, i, t)]
+                                a["fss_mse"][s] += float(mse_l[i].sum())
+                                a["fss_den"][s] += float(den_l[i].sum())
     out = {"loss": loss_sum / max(n, 1)}
-    for L in leads:
+    for i, L in enumerate(leads):
         for t in thresholds:
             key = f"csi_lead{L}_{t}"
             out[key] = float(np.nanmean(csi_model[(L, t)]))
             out[f"{key}_pers"] = float(np.nanmean(csi_pers[(L, t)]))
             for who, tag in (("m", ""), ("p", "_pers")):
-                st = pooled[(who, L, t)]
+                st = acc[(who, i, t)]
+                if not full_metrics:
+                    continue
                 den = st["hits"] + st["fa"] + st["miss"]
                 out[f"{key}_pooled{tag}"] = (st["hits"] / den) if den else float("nan")
                 if st["n"]:
@@ -305,6 +380,15 @@ def main(argv: list[str] | None = None) -> int:
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
     args.out.mkdir(parents=True, exist_ok=True)
+    # Per-run config + metrics files (reproducible experiment records).
+    config = {k: (str(v) if isinstance(v, Path) else v)
+              for k, v in sorted(vars(args).items())}
+    config.update({"n_params": n_params, "in_channels": in_channels,
+                   "out_channels": out_channels, "n_train": len(train_ds),
+                   "n_val": len(val_ds), "seed": args.seed})
+    (args.out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    metrics_path = args.out / "metrics.jsonl"
+    metrics_path.write_text("")
     best = -1.0
     for epoch in range(args.epochs):
         model.train()
@@ -331,6 +415,9 @@ def main(argv: list[str] | None = None) -> int:
             line += " | " + " ".join(
                 f"L{L}={val[f'csi_lead{L}_1.0']:.3f}" for L in leads)
         print(line)
+        with open(metrics_path, "a") as fh:
+            fh.write(json.dumps({"epoch": epoch, "train_loss":
+                                 running / max(1, len(train_dl)), **val}) + "\n")
 
         # Select on the cross-lead mean: single-lead keys can be 0.0 in
         # every epoch (frozen best.pt) when the primary lead is unlearned.
@@ -354,6 +441,20 @@ def main(argv: list[str] | None = None) -> int:
                 "advect": advect_cfg,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
+
+    # Final full-metrics pass (pooled CSI, Brier, FSS) on the best
+    # checkpoint — too slow for every epoch, run once at the end.
+    best_path = args.out / "best.pt"
+    if best_path.exists():
+        ck = torch.load(best_path, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model"])
+        print("computing full metrics (pooled CSI / Brier / FSS) on best.pt ...")
+        full = evaluate(model, val_dl, device,
+                        radar_channels=len(train_s[0].inputs), leads=leads,
+                        full_metrics=True)
+        (args.out / "metrics_final.json").write_text(
+            json.dumps(full, indent=2) + "\n")
+        print("full metrics written to metrics_final.json")
     return 0
 
 
