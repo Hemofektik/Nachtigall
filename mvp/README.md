@@ -299,6 +299,26 @@ verifies on radar — sensible: precipitation lags the low-level flow).
 Rendered frames show the band translating through 25/35/45 min instead
 of fading in place.
 
+### Depth-5 scaling (31 M params) — negative result
+
+Scaled the advection model from 7.7 M (depth 4) to 31 M (depth 5,
+receptive field ~250 km), same everything else (crop 384 vs 512):
+
+| lead | 7.7M | 31M | verdict |
+|---|---|---|---|
+| +5 min | 0.223 | 0.208 | 0.93× |
+| +20 min | 0.087 | 0.082 | 0.94× |
+| +30 min | 0.045 | 0.045 | parity |
+| +45 min | 0.015 | 0.006 | **0.39×** |
+| CSI@0.1 | 0.420 | 0.437 | +4% |
+| val_loss | 0.0178 | 0.0212 | worse |
+
+Diagnosis: **not overfitting — undertraining**. Train loss fell only
+3.3% over 10 epochs (0.484 → 0.468); the 31 M model barely learned
+within the same budget. With 2,926 samples and batch 2, capacity is
+not the bottleneck — data and training time are. **Keep 7.7 M as the
+production size**; revisit scaling only with a multi-season dataset.
+
 ## Status
 
 - [x] RADOLAN readers (classic bin + ODIM HDF5), grid verified against spec anchors
