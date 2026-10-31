@@ -102,7 +102,36 @@ resampling, keeping the comparison apples-to-apples.
 **Daemon integration (implemented this session):**
 `radar_sync.sync_rv()` archives tars into `data/rv/` with the same
 40 h window logic as the realtime YW/RW mirror; wired into the hourly
-cycle and the status line (`+N nowcast`).
+cycle and the status line (`+N nowcast`). Verified live: one cycle
+fetched 479 tars (~190 MB) in 18 min; the next cycle correctly picked
+up only the 4 new issue times.
+
+**Loader (implemented and validated):** `n8igall_mvp/rv.py`
+(`read_rv_tar`) extracts selected leads, decodes ACRR (mm/5min → ×12 →
+mm/h) and reprojects de1200 → rx through lon/lat using `grid.py`'s two
+authoritative transformers (the grids use **different datums** — classic
+rx is sphere R=6370.04 km, de1200 is the WGS84 ellipsoid — so this is
+not a pure pixel translation; a hand-derived constant offset was wrong
+and is why an early shift scan failed).
+
+Validation results (2026-10-31):
+
+* **Geometry**: resampling a realtime YW HDF5 (de1200) onto its classic
+  twin (rx) gives validity-mask **IoU = 0.9995**; the IoU is
+  shift-sensitive (0.996 @0 px → 0.615 @200 px), so the test is
+  meaningful. RV lead-000 vs realtime YW at the identical interval
+  (11:55–12:00): validity IoU 0.994, valid-region bboxes match.
+* **Timestamps**: RV lead-L covers the 5-min interval ending
+  `issue + L` — exactly our YW convention (verified from the
+  `dataset1/what` start/end times on both products).
+* **Product caveat**: RV is `product=MAX` (max-accumulation composite)
+  while YW is `RATE` (mean rate). On the same interval the rain masks
+  overlap 59 % (IoU 0.42 at >0.5 mm/h) and medians agree (0.81 vs
+  0.72 mm/h after ×12), but RV's tail is much heavier (p99 28.8 vs
+  2.25 mm/h), so **Pearson correlation is ~0 while Spearman ρ = 0.28**
+  (n=198, p=6e-5). Scoring RV against YW observations therefore needs
+  threshold-based scores (CSI/FSS — which we have), not continuous
+  ones, or a MAX↔RATE conversion to be researched.
 
 **Why this matters.** This is the review's point 1: our numbers were
 only measured against persistence. `composite/rv` is what DWD actually
