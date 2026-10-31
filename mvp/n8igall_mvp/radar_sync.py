@@ -36,6 +36,12 @@ DEFAULT_VOLUMES = Path("/data/n8igall/data/volumes")
 WINDOW_DAYS = 14  # recent YW daily tars cover ~2 weeks; RW flat files 2025+
 MIN_FREE_GB = 25  # never let volume collection fill the system disk
 REALTIME = "https://opendata.dwd.de/weather/radar/radolan"
+# DWD's operational nowcast (RADVOR-derived): one tar per issue time with
+# 25 HDF5 forecasts at leads 0..120 min in 5-min steps. Realtime only (no
+# archive), so it must be grabbed while on the rolling window. This is the
+# honest baseline to compare against — not persistence.
+RV_URL = "https://opendata.dwd.de/weather/radar/composite/rv"
+RV_WINDOW_HOURS = 40
 # The CDC archive lags ~2 days for YW; the real-time HDF5 directory keeps a
 # rolling ~48 h window, so the daemon mirrors it into data/raw/rt/.
 RT_WINDOW_HOURS = 40
@@ -79,6 +85,44 @@ def sync_realtime(dest: Path, window_hours: int = RT_WINDOW_HOURS) -> int:
                 stored += 1
             except (urllib.error.HTTPError, urllib.error.URLError, OSError):
                 target.unlink(missing_ok=True)
+    return stored
+
+
+def sync_rv(dest: Path, window_hours: int = RV_WINDOW_HOURS) -> int:
+    """Archive DWD operational nowcast tars (composite/rv) into data/rv/.
+
+    Each ``composite_rv_YYYYMMDD_HHMM.tar`` holds 25 HDF5 forecasts
+    (leads 0..120 min, 5-min steps) on the 1200x1100 stereographic grid.
+    """
+    import re
+    rv_dir = dest / "rv"
+    rv_dir.mkdir(parents=True, exist_ok=True)
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) \
+        - timedelta(hours=window_hours)
+    try:
+        with urllib.request.urlopen(f"{RV_URL}/", timeout=60) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        return 0
+    stored = 0
+    for name in sorted(set(re.findall(
+            r"composite_rv_\d{8}_\d{4}\.tar", html))):
+        try:
+            t = datetime.strptime(name[13:21] + name[22:26], "%Y%m%d%H%M")
+        except ValueError:
+            continue
+        if t < cutoff:
+            continue
+        target = rv_dir / name
+        if target.exists():
+            continue
+        try:
+            with urllib.request.urlopen(f"{RV_URL}/{name}", timeout=120) \
+                    as resp, open(target, "wb") as out:
+                out.write(resp.read())
+            stored += 1
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+            target.unlink(missing_ok=True)
     return stored
 
 
@@ -146,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             yw, rw = sync(args.dest, args.window_days)
             rt = sync_realtime(args.dest)
+            rv = sync_rv(args.dest)
             vol = 0
             pruned = prune_volumes(args.volumes, args.retention_days)
             free_gb = shutil.disk_usage(args.volumes.parent).free / 1e9
@@ -156,7 +201,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 vol = collect_volumes_once(args.volumes, args.retention_days)
             print(f"{datetime.now():%Y-%m-%d %H:%M} "
-                  f"+{yw} YW, +{rw} RW, +{rt} real-time, +{vol} volume files, "
+                  f"+{yw} YW, +{rw} RW, +{rt} real-time, +{rv} nowcast, "
+                  f"+{vol} volume files, "
                   f"pruned {pruned} volumes ({time.time()-t0:.0f}s)", flush=True)
         except Exception as e:  # noqa: BLE001 - a daemon must not die
             print(f"{datetime.now():%Y-%m-%d %H:%M} ERROR: {e}",
