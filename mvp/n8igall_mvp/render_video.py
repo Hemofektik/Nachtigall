@@ -55,15 +55,18 @@ NO_DATA = "#dcdcdc"
 
 
 def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
-                   wind: WindSampler) -> np.ndarray:
-    """[29, H, W] exactly as training's RadolanDataset order:
-    19 radar + 6 wind + 4 static (wind before static!)."""
+                   wind: WindSampler, cloud=None) -> np.ndarray:
+    """[29 or 32, H, W] exactly as training's RadolanDataset order:
+    19 radar + 6 wind + 4 static (wind before static!) + 3 cloud (last)."""
     radar = []
     for i in range(19):
         f = read_frame(_yw_path(yw_root, t - timedelta(minutes=5 * (18 - i))))
         radar.append(np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0))
-    return np.concatenate([np.stack(radar).astype(np.float32),
-                           wind.channels_for(t), static], axis=0)
+    x = np.concatenate([np.stack(radar).astype(np.float32),
+                        wind.channels_for(t), static], axis=0)
+    if cloud is not None:
+        x = np.concatenate([x, cloud.channels_for(t)], axis=0)
+    return x
 
 
 def pred_at_lead(pred_all: np.ndarray, lead: int,
@@ -123,9 +126,15 @@ def main(argv: list[str] | None = None) -> int:
     static = static_npz["channels"].astype(np.float32)
     wind = WindSampler(_PKG_ROOT / "data" / "wind" / "era5_wind.npz",
                        elevation=static_npz["elevation"])
+    # Cloud channels (3) are appended last when the checkpoint was trained
+    # with them: 19 radar + 6 wind + 4 static + 3 cloud = 32.
+    cloud = None
+    if ckpt["in_channels"] > 29:
+        from .cloud import CloudSampler
+        cloud = CloudSampler(_PKG_ROOT / "data" / "wind" / "era5_cloud.npz")
 
     # One issue time: model outputs for all discrete leads + input frame.
-    x = assemble_input(yw_root, t, static, wind)
+    x = assemble_input(yw_root, t, static, wind, cloud)
     with torch.no_grad():
         pred_all = model(torch.from_numpy(x)[None]).numpy()[0]  # [7,H,W]
     input_now = np.expm1(x[18])  # radar frame at issue time t (last of 19)
