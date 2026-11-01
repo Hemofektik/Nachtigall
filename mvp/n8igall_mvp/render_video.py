@@ -55,15 +55,22 @@ NO_DATA = "#dcdcdc"
 
 
 def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
-                   wind: WindSampler, cloud=None) -> np.ndarray:
-    """[29 or 32, H, W] exactly as training's RadolanDataset order:
-    19 radar + 6 wind + 4 static (wind before static!) + 3 cloud (last)."""
-    radar = []
+                   wind: WindSampler, cloud=None, flow: bool = False) -> np.ndarray:
+    """[29/32/34, H, W] exactly as training's RadolanDataset order:
+    19 radar + 6 wind + 2 flow (when enabled, right after wind - matching
+    train.py's u_idx = n_radar + WIND_CHANNELS) + 4 static + 3 cloud."""
+    radar, raw = [], []
     for i in range(19):
         f = read_frame(_yw_path(yw_root, t - timedelta(minutes=5 * (18 - i))))
-        radar.append(np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0))
+        r = np.where(f.valid, np.clip(f.data, 0, None), 0.0)
+        raw.append(r)
+        radar.append(np.log1p(r))
     x = np.concatenate([np.stack(radar).astype(np.float32),
-                        wind.channels_for(t), static], axis=0)
+                        wind.channels_for(t)], axis=0)
+    if flow:
+        from .dataset import optical_flow
+        x = np.concatenate([x, optical_flow(raw[-2], raw[-1])], axis=0)
+    x = np.concatenate([x, static], axis=0)
     if cloud is not None:
         x = np.concatenate([x, cloud.channels_for(t)], axis=0)
     return x
@@ -126,15 +133,16 @@ def main(argv: list[str] | None = None) -> int:
     static = static_npz["channels"].astype(np.float32)
     wind = WindSampler(_PKG_ROOT / "data" / "wind" / "era5_wind.npz",
                        elevation=static_npz["elevation"])
-    # Cloud channels (3) are appended last when the checkpoint was trained
-    # with them: 19 radar + 6 wind + 4 static + 3 cloud = 32.
+    # Cloud channels (3) are appended when the checkpoint was trained with
+    # them: 19 + 6 + 4 + 3 = 32; flow adds 2 more (34).
     cloud = None
-    if ckpt["in_channels"] > 29:
+    if ckpt["in_channels"] >= 32:
         from .cloud import CloudSampler
         cloud = CloudSampler(_PKG_ROOT / "data" / "wind" / "era5_cloud.npz")
+    use_flow = ckpt["in_channels"] >= 34
 
     # One issue time: model outputs for all discrete leads + input frame.
-    x = assemble_input(yw_root, t, static, wind, cloud)
+    x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)
     with torch.no_grad():
         pred_all = model(torch.from_numpy(x)[None]).numpy()[0]  # [7,H,W]
     input_now = np.expm1(x[18])  # radar frame at issue time t (last of 19)
