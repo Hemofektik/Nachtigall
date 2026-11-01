@@ -100,7 +100,7 @@ def fetch(start: date, end: date, out: Path) -> None:
                         for k in ("cloud_cover_low", "cloud_cover_mid",
                                   "cloud_cover_high")]
                 chunks.append(np.stack(vals, axis=-1))
-            time.sleep(2.0)  # be polite to the free API
+            time.sleep(6.0)  # free tier: ~10 requests/min
         arr = np.stack(chunks, axis=1)  # [T, n_pts, 3]
         assert times is not None
         np.savez_compressed(

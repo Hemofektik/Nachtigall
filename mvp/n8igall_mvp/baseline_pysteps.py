@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=None)
     p.add_argument("--max-samples", type=int, default=0,
                    help="0 = all validation samples")
+    p.add_argument("--stride", type=int, default=1,
+                   help="take every Nth sample (for large test sets)")
     args = p.parse_args(argv)
 
     from pysteps.motion.lucaskanade import dense_lucaskanade
@@ -65,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     samples = [Sample(**s) for s in json.loads(args.index.read_text())]
     n_val = max(1, int(len(samples) * args.val_fraction))
     val_s = samples[-n_val:]
+    if args.stride > 1:
+        val_s = val_s[::args.stride]
     if args.max_samples:
         val_s = val_s[: args.max_samples]
 

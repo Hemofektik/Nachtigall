@@ -127,7 +127,7 @@ def fetch(start: date, end: date, out: Path) -> None:
                 u100, v100 = _to_uv(np.array(h["wind_speed_100m"]),
                                     np.array(h["wind_direction_100m"]))
                 chunks.append(np.stack([u10, v10, u100, v100], axis=-1))
-            time.sleep(2.0)  # be polite to the free API
+            time.sleep(6.0)  # free tier: ~10 requests/min
         arr = np.stack(chunks, axis=1)  # [T, n_pts, 4]
         assert times is not None
         np.savez_compressed(
