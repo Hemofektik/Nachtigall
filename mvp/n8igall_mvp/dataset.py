@@ -41,6 +41,11 @@ def _yw_path(yw_dir: Path, t: datetime) -> Path:
     flat = yw_dir / name
     if flat.exists():
         return flat
+    # realtime mirror: flat dir with .hdf5 suffix (de1200 grid, reprojected
+    # to rx by read_hdf5)
+    h5 = yw_dir / f"{name}.hdf5"
+    if h5.exists():
+        return h5
     return yw_dir / t.strftime("%y%m%d") / name
 
 

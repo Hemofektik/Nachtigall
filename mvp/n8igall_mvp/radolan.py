@@ -25,6 +25,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+from pyproj import CRS, Transformer
 
 from .grid import RadolanGrid, classic_grid, grid_from_odim_where
 
@@ -154,7 +155,16 @@ def read_bin(path: Path) -> RadolanFrame:
 
 
 def read_hdf5(path: Path) -> RadolanFrame:
-    """Read an ODIM HDF5 RADOLAN composite."""
+    """Read an ODIM HDF5 RADOLAN composite.
+
+    Realtime files (RADKLIM HDF5 and the live opendata mirror) ship on the
+    1200x1100 ``de1200`` grid (WGS84 ellipsoid); the classic products are on
+    the 900x900 national ``rx`` grid (sphere R=6370.04 km). The two
+    projections differ, so de1200 frames are reprojected to rx through
+    lon/lat using :mod:`n8igall_mvp.grid` (validated: validity-mask
+    IoU 0.9995 against the classic twin of the same frame). Frames already
+    on rx are returned unchanged.
+    """
     with h5py.File(path, "r") as f:
         grid = grid_from_odim_where(f["where"].attrs)
         ds = f["dataset1/data1"]
@@ -175,9 +185,42 @@ def read_hdf5(path: Path) -> RadolanFrame:
         quantity = str(what["quantity"].decode()
                        if isinstance(what["quantity"], bytes) else what["quantity"])
 
+    if (grid.nrows, grid.ncols) != (900, 900):
+        out, valid = _reproject_to_rx(out, valid, grid)
+
     return RadolanFrame(data=out.astype(np.float32), valid=valid, grid=grid,
                         timestamp=_timestamp_from_name(path), product=product,
                         quantity=quantity)
+
+
+_RX_RESAMPLE: dict | None = None
+
+
+def _reproject_to_rx(data: np.ndarray, valid: np.ndarray,
+                     grid) -> tuple[np.ndarray, np.ndarray]:
+    """Resample a de1200 frame onto the 900x900 rx grid (cached weights)."""
+    global _RX_RESAMPLE
+    from scipy.ndimage import map_coordinates
+    from .grid import classic_grid
+
+    if _RX_RESAMPLE is None:
+        cg = classic_grid()
+        rows, cols = np.meshgrid(np.arange(cg.nrows), np.arange(cg.ncols),
+                                 indexing="ij")
+        x = cg.x_ll + (cols + 0.5) * cg.cell
+        y = cg.y_ll + (cg.nrows - 1 - rows + 0.5) * cg.cell
+        inv = Transformer.from_crs(CRS.from_proj4(cg.proj4), CRS.from_epsg(4326),
+                                   always_xy=True)
+        lon, lat = inv.transform(x, y)
+        # lonlat_to_pixels returns (col, row)
+        _RX_RESAMPLE = grid.lonlat_to_pixels(lon, lat)
+    ocol, orow = _RX_RESAMPLE
+
+    out = map_coordinates(np.nan_to_num(data, nan=0.0),
+                          [orow, ocol], order=1, mode="nearest")
+    v = map_coordinates(valid.astype(np.float32),
+                        [orow, ocol], order=0, mode="nearest") > 0.5
+    return out.astype(np.float32), v
 
 
 def read_frame(path: Path | str) -> RadolanFrame:

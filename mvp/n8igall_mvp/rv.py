@@ -73,7 +73,8 @@ class _RxResampler:
         inv = Transformer.from_crs(CRS.from_proj4(self._cg.proj4),
                                    CRS.from_epsg(4326), always_xy=True)
         lon, lat = inv.transform(x, y)
-        self.orow, self.ocol = odim_grid.lonlat_to_pixels(lon, lat)
+        # lonlat_to_pixels returns (col, row)
+        self.ocol, self.orow = odim_grid.lonlat_to_pixels(lon, lat)
 
     def __call__(self, data: np.ndarray, valid: np.ndarray
                  ) -> tuple[np.ndarray, np.ndarray]:
