@@ -50,20 +50,21 @@ class RadolanDataset(Dataset):
     def __init__(self, samples: list[Sample], crop: int | None = 512,
                  static_channels: np.ndarray | None = None,
                  wind_sampler=None, leads: list[int] | None = None,
-                 cloud_sampler=None):
+                 cloud_sampler=None, flow: bool = False):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
         self.wind = wind_sampler       # WindSampler or None
         self.cloud = cloud_sampler     # CloudSampler or None
         self.leads = leads              # multi-lead target minutes or None
+        self.flow = flow                # append optical-flow channels
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
         x, y, mask = load_sample(self.samples[idx], wind_sampler=self.wind,
-                                 leads=self.leads)
+                                 leads=self.leads, flow=self.flow)
         if self.static is not None:
             x = np.concatenate([x, self.static], axis=0)
         if self.cloud is not None:
@@ -293,9 +294,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="hard bound on the residual delta in log1p units "
                         "(e.g. 3.0 caps prediction at expm1(now+3))")
     p.add_argument("--advect", action="store_true",
-                   help="warp the residual base by the 100m wind field over "
-                        "each lead time (motion by construction); requires "
-                        "--residual, --wind and multi-lead outputs")
+                   help="advect the now-frame by the steering field as the "
+                        "residual base (requires --residual --leads)")
+    p.add_argument("--flow", action="store_true",
+                   help="append Farneback optical-flow channels (px/5min, "
+                        "from the last two radar frames) and use them as "
+                        "the advection field instead of wind")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--cloud", type=Path, default=None,
@@ -338,10 +342,10 @@ def main(argv: list[str] | None = None) -> int:
 
     train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static,
                               wind_sampler=wind_sampler, leads=leads,
-                              cloud_sampler=cloud_sampler)
+                                cloud_sampler=cloud_sampler, flow=args.flow)
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
                             wind_sampler=wind_sampler, leads=leads,
-                              cloud_sampler=cloud_sampler)
+                              cloud_sampler=cloud_sampler, flow=args.flow)
     train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, drop_last=True,
                           persistent_workers=args.num_workers > 0)
@@ -352,19 +356,31 @@ def main(argv: list[str] | None = None) -> int:
     in_channels = (len(train_s[0].inputs)
                    + (0 if static is None else static.shape[0])
                    + (0 if wind_sampler is None else WIND_CHANNELS)
-                   + (0 if cloud_sampler is None else 3))
+                   + (0 if cloud_sampler is None else 3)
+                   + (2 if args.flow else 0))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out_channels = len(leads) if leads else 1
     residual_from = (len(train_s[0].inputs) - 1) if args.residual else None
     advect_cfg = None
     if args.advect:
-        if not (args.residual and args.wind and leads):
-            raise SystemExit("--advect requires --residual --wind and --leads")
-        # wind channels sit right after the radar history: u10, v10, u100,
-        # v100, upslope, div (see wind.N_CHANNELS / dataset.load_sample)
+        if not (args.residual and leads):
+            raise SystemExit("--advect requires --residual and --leads")
         n_radar = len(train_s[0].inputs)
-        advect_cfg = {"u_idx": n_radar + 2, "v_idx": n_radar + 3,
-                      "leads": leads}
+        if args.flow:
+            # flow channels sit right after radar history + wind channels
+            if wind_sampler is None:
+                raise SystemExit("--flow advection expects --wind channels "
+                                 "(flow is appended after them)")
+            advect_cfg = {"u_idx": n_radar + WIND_CHANNELS,
+                          "v_idx": n_radar + WIND_CHANNELS + 1,
+                          "leads": leads, "mode": "flow"}
+        else:
+            if wind_sampler is None:
+                raise SystemExit("--advect (wind mode) requires --wind")
+            # wind channels sit right after the radar history: u10, v10,
+            # u100, v100, upslope, div (see wind.N_CHANNELS)
+            advect_cfg = {"u_idx": n_radar + 2, "v_idx": n_radar + 3,
+                          "leads": leads, "mode": "wind"}
     model = UNet(in_channels, base=args.base_channels, depth=args.depth,
                  out_channels=out_channels,
                  residual_from=residual_from,

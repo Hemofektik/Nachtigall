@@ -70,14 +70,36 @@ def build_index(yw_dir: Path, rw_dir: Path, start: datetime, end: datetime,
     return samples
 
 
+def optical_flow(prev: np.ndarray, curr: np.ndarray) -> np.ndarray:
+    """Dense optical flow from ``prev`` to ``curr`` (both mm/h [H,W]).
+
+    Returns [2,H,W] float32 in pixels per frame step: channel 0 = eastward
+    (column), channel 1 = southward (row). Uses OpenCV Farneback (~0.2 s
+    for 900x900); intensities are clipped and scaled to uint8 first.
+    """
+    import cv2
+    a = (np.clip(prev, 0, 50) / 50.0 * 255).astype(np.uint8)
+    b = (np.clip(curr, 0, 50) / 50.0 * 255).astype(np.uint8)
+    fl = cv2.calcOpticalFlowFarneback(a, b, None, pyr_scale=0.5, levels=3,
+                                      winsize=15, iterations=3, poly_n=5,
+                                      poly_sigma=1.2, flags=0)
+    fl = cv2.GaussianBlur(fl, (0, 0), sigmaX=2.0)
+    return np.transpose(fl, (2, 0, 1)).astype(np.float32)
+
+
 def load_sample(sample: Sample,
                 wind_sampler=None,
-                leads: list[int] | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                leads: list[int] | None = None,
+                flow: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load one sample.
 
     With ``leads`` (minutes), the target is the YW rate stack at each lead
     time (shape [len(leads), H, W]); otherwise the single RW +60 min target
     ([1, H, W]).
+
+    With ``flow=True``, two optical-flow channels (Farneback, px per 5-min
+    step, east/south) computed from the last two radar frames are appended
+    after all other channels.
 
     Returns:
         x: float32 [C, H, W] log1p radar history (+ optional wind channels),
@@ -89,8 +111,8 @@ def load_sample(sample: Sample,
     every loss/metric consumer (``expm1(y)``, ``log1p(threshold)``) assumes it.
     """
     frames = [read_frame(p) for p in sample.inputs]
-    x = np.stack([np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0)
-                  for f in frames]).astype(np.float32)
+    raw = [np.where(f.valid, np.clip(f.data, 0, None), 0.0) for f in frames]
+    x = np.stack([np.log1p(r) for r in raw]).astype(np.float32)
 
     if wind_sampler is not None:
         # Wind valid over the lead-time window, anchored at the last input
@@ -102,6 +124,8 @@ def load_sample(sample: Sample,
         tgt = read_frame(sample.target)
         y = np.log1p(np.where(tgt.valid, np.clip(tgt.data, 0, None), 0.0))[None].astype(np.float32)
         mask = tgt.valid[None]
+        if flow:
+            x = np.concatenate([x, optical_flow(raw[-2], raw[-1])], axis=0)
         return x, y, mask
 
     t0 = datetime.strptime(frames[-1].timestamp, "%y%m%d%H%M")
@@ -118,6 +142,8 @@ def load_sample(sample: Sample,
         except FileNotFoundError:
             ys.append(np.zeros(x.shape[-2:], dtype=np.float32))
             ms.append(np.zeros(x.shape[-2:], dtype=bool))
+    if flow:
+        x = np.concatenate([x, optical_flow(raw[-2], raw[-1])], axis=0)
     return x, np.log1p(np.stack(ys)).astype(np.float32), np.stack(ms)
 
 

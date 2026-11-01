@@ -42,12 +42,14 @@ class UNet(nn.Module):
         scratch - input texture is conserved by construction and the model
         only has to learn what changes. None = direct prediction.
 
-        ``advect``: {"u_idx", "v_idx", "leads": [...]} - when set (with
-        ``residual_from``), the residual base is the now-frame *warped by
-        the wind field over each lead time* (semi-Lagrangian sampling with
-        a learnable per-lead scale factor). Motion then exists by
-        construction; the network only learns growth/decay on top of the
-        advected field.
+        ``advect``: {"u_idx", "v_idx", "leads": [...], "mode": "wind"|"flow"} -
+        when set (with ``residual_from``), the residual base is the now-frame
+        *warped by the steering field over each lead time* (semi-Lagrangian
+        sampling with a learnable per-lead scale factor). Motion then exists
+        by construction; the network only learns growth/decay on top of the
+        advected field. ``mode="wind"`` (default): u/v are m/s at 100 m
+        (ERA5). ``mode="flow"``: u/v are dense optical-flow displacements in
+        px per 5-min step, computed from the last two radar frames.
         """
         super().__init__()
         self.residual_from = residual_from
@@ -60,8 +62,10 @@ class UNet(nn.Module):
             self.u_idx = advect["u_idx"]
             self.v_idx = advect["v_idx"]
             self.advect_leads = list(advect["leads"])
-            # learnable per-lead displacement scale (100 m wind underestimates
-            # the steering-level flow that actually moves precipitation)
+            self.advect_mode = advect.get("mode", "wind")
+            # learnable per-lead displacement scale: for wind it compensates
+            # the 100 m flow underestimating steering-level motion; for flow
+            # it lets the network correct Farneback's bias.
             self.advect_scale = nn.Parameter(torch.ones(len(self.advect_leads)))
         self.enc = nn.ModuleList()
         self.dec = nn.ModuleList()
@@ -83,16 +87,22 @@ class UNet(nn.Module):
 
     def _advect(self, now: torch.Tensor, u: torch.Tensor,
                 v: torch.Tensor, lead_min: float, lead_i: int) -> torch.Tensor:
-        """Semi-Lagrangian warp of ``now`` by wind (u,v) over ``lead_min``.
+        """Semi-Lagrangian warp of ``now`` by (u,v) over ``lead_min``.
 
-        u: eastward m/s, v: northward m/s; cell = 1000 m; row 0 = north.
-        Destination (r,c) samples the source position the parcel came from:
-        src_col = c - u*dt/1000*scale, src_row = r + v*dt/1000*scale.
+        mode "wind": u eastward m/s, v northward m/s at 100 m; cell = 1000 m.
+        mode "flow": u eastward px, v southward px per 5-min frame step
+        (Farneback from the last two radar frames).
+        Destination (r,c) samples the source position the parcel came from.
         """
         scale = self.advect_scale[lead_i]
-        dt = float(lead_min) * 60.0
-        dx = -u * (dt / 1000.0) * scale   # source offset, east positive
-        dy = v * (dt / 1000.0) * scale    # source offset, south positive
+        if self.advect_mode == "flow":
+            steps = (float(lead_min) / 5.0) * scale
+            dx = -u * steps   # source offset, east positive
+            dy = v * steps    # source offset, south positive
+        else:
+            dt = float(lead_min) * 60.0
+            dx = -u * (dt / 1000.0) * scale   # source offset, east positive
+            dy = v * (dt / 1000.0) * scale    # source offset, south positive
         _, _, h, w = now.shape
         cs = torch.arange(w, device=now.device, dtype=now.dtype)
         rs = torch.arange(h, device=now.device, dtype=now.dtype)
