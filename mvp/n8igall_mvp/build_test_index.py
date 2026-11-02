@@ -22,13 +22,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .dataset import _yw_path
+from .radolan import read_frame
 
 LEADS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
 N_HISTORY = 19          # 90 min at 5-min spacing, same as training (index_B)
 SPACING_MIN = 5
 
 
-def build(rt_dir: Path, start: datetime, end: datetime) -> list[dict]:
+def build(rt_dir: Path, start: datetime, end: datetime,
+          issue_stride_min: int = 5, rain_score: bool = False) -> list[dict]:
     samples = []
     t = start
     while t <= end:
@@ -38,9 +40,15 @@ def build(rt_dir: Path, start: datetime, end: datetime) -> list[dict]:
             # every lead target must exist too
             targets = [_yw_path(rt_dir, t + timedelta(minutes=L)) for L in LEADS]
             if all(p.exists() for p in targets):
-                samples.append({"inputs": [str(p) for p in inputs],
-                                "target": str(targets[-1])})
-        t += timedelta(minutes=SPACING_MIN)
+                rec: dict = {"inputs": [str(p) for p in inputs],
+                             "target": str(targets[-1])}
+                if rain_score:
+                    # rain fraction of the issue-time frame: cheap proxy for
+                    # "will this sample contain rain" (sampler weight)
+                    f = read_frame(inputs[-1])
+                    rec["rain"] = float((f.data[f.valid] > 0.1).mean())
+                samples.append(rec)
+        t += timedelta(minutes=issue_stride_min)
     return samples
 
 
@@ -53,9 +61,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--end", type=datetime.fromisoformat,
                    default=datetime(2026, 11, 1, 23, 55))
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--issue-stride", type=int, default=5,
+                   help="minutes between issue times (5 = every frame)")
+    p.add_argument("--rain-score", action="store_true",
+                   help="store per-sample rain fraction for biased sampling")
     args = p.parse_args(argv)
 
-    samples = build(args.rt_dir, args.start, args.end)
+    samples = build(args.rt_dir, args.start, args.end,
+                    issue_stride_min=args.issue_stride,
+                    rain_score=args.rain_score)
     args.out.write_text(json.dumps(samples, indent=1) + "\n")
     print(f"{len(samples)} test samples "
           f"({args.start:%Y-%m-%d} .. {args.end:%Y-%m-%d}) -> {args.out}")

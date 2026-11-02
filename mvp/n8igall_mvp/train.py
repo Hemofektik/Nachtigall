@@ -277,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--index", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--val-fraction", type=float, default=0.2)
+    p.add_argument("--rain-bias", type=float, default=0.0,
+                   help="upweight rainy training samples: sampling weight = "
+                        "1 + bias * rain_fraction (0 = uniform shuffle)")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -346,9 +349,23 @@ def main(argv: list[str] | None = None) -> int:
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
                             wind_sampler=wind_sampler, leads=leads,
                               cloud_sampler=cloud_sampler, flow=args.flow)
-    train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                          num_workers=args.num_workers, drop_last=True,
-                          persistent_workers=args.num_workers > 0)
+    if args.rain_bias > 0 and any(getattr(s, "rain", 0) > 0 for s in train_s):
+        # rain-biased sampling: rainy samples seen more often (weights are
+        # per-epoch draw probabilities; dry samples still appear)
+        gen = torch.Generator().manual_seed(args.seed)
+        weights = torch.tensor(
+            [1.0 + args.rain_bias * float(getattr(s, "rain", 0.0))
+             for s in train_s], dtype=torch.double)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights, num_samples=len(train_s), replacement=True, generator=gen)
+        train_dl = DataLoader(train_ds, batch_size=args.batch_size,
+                              sampler=sampler,
+                              num_workers=args.num_workers, drop_last=True,
+                              persistent_workers=args.num_workers > 0)
+    else:
+        train_dl = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                              num_workers=args.num_workers, drop_last=True,
+                              persistent_workers=args.num_workers > 0)
     val_dl = DataLoader(val_ds, batch_size=1, shuffle=False,
                         num_workers=args.num_workers)
 

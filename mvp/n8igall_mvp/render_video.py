@@ -133,13 +133,15 @@ def main(argv: list[str] | None = None) -> int:
     static = static_npz["channels"].astype(np.float32)
     wind = WindSampler(_PKG_ROOT / "data" / "wind" / "era5_wind.npz",
                        elevation=static_npz["elevation"])
-    # Cloud channels (3) are appended when the checkpoint was trained with
-    # them: 19 + 6 + 4 + 3 = 32; flow adds 2 more (34).
+    # Cloud channels (3) are present when in_channels >= 32 (radar19 +
+    # wind6 + static4 + cloud3); flow mode comes from the checkpoint itself
+    # (a no-cloud flow model has 31 channels, so don't infer from count).
     cloud = None
     if ckpt["in_channels"] >= 32:
         from .cloud import CloudSampler
         cloud = CloudSampler(_PKG_ROOT / "data" / "wind" / "era5_cloud.npz")
-    use_flow = ckpt["in_channels"] >= 34
+    use_flow = bool(ckpt.get("advect")
+                    and ckpt["advect"].get("mode") == "flow")
 
     # One issue time: model outputs for all discrete leads + input frame.
     x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)

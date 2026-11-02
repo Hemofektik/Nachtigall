@@ -34,6 +34,7 @@ TS_FMT = "%Y%m%d%H%M"
 class Sample:
     inputs: list[str]  # YW file paths, oldest first
     target: str  # RW file path
+    rain: float = 0.0  # rain fraction of the issue-time frame (sampler weight)
 
 
 def _yw_path(yw_dir: Path, t: datetime) -> Path:
