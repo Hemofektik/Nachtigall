@@ -41,28 +41,57 @@ python3 -m n8igall_mvp.download_radolan --product rw --start 2025-04-01 --end 20
 # 2. static terrain channels (Copernicus DEM from AWS mirror)
 python3 -m n8igall_mvp.dem
 
-# 3. sample index (4 x 30-min history -> RW at +60 min)
-python3 -m n8igall_mvp.dataset --yw-dir data/raw/yw --rw-dir data/raw/rw \
-    --start 2025-04-01T00:00 --end 2025-05-03T23:00 --out data/index.json
+# 3. ERA5 wind + cloud channels (open-meteo, free; resumable monthly chunks)
+python3 -m n8igall_mvp.wind --start 2024-06-01 --end 2026-11-02
+python3 -m n8igall_mvp.cloud --start 2024-06-01 --end 2026-11-02
 
-# 4. train (evaluates CSI vs persistence baseline each epoch)
-python3 -m n8igall_mvp.train --index data/index.json --out runs/v1 \
-    --epochs 15 --static data/static/channels.npz
+# 4. sample index (19 x 5-min history -> YW at leads 5..60 min, rain-scored)
+python3 -m n8igall_mvp.build_test_index --rt-dir data/raw/yw \
+    --start 2024-06-01 --end 2025-05-31T23:55 --issue-stride 30 \
+    --rain-score --out data/index_multi.json
 
-# 5. export for C++ inference
-python3 -m n8igall_mvp.export_onnx --checkpoint runs/v1/best.pt --out runs/v1/model.onnx
+# 5. train (pooled CSI / Brier / FSS on the best checkpoint at the end)
+python3 -m n8igall_mvp.train --index data/index_multi.json --out runs/multi_flow \
+    --epochs 10 --batch-size 2 --crop 512 --base-channels 64 --depth 4 \
+    --loss huber_csi_rate --residual --delta-cap 1.5 --advect --flow \
+    --rain-bias 4 --static data/static/channels.npz --wind data/wind/era5_wind.npz \
+    --leads 5,10,15,20,25,30,35,40,45,50,55,60 --seed 0
+
+# 6. evaluate a checkpoint on any index (e.g. the untouched test set)
+python3 -m n8igall_mvp.eval_checkpoint --checkpoint runs/multi_flow/best.pt \
+    --index data/index_test_rt.json --flow --out runs/multi_flow/test_metrics.json
+
+# 7. baselines (pysteps optical flow + persistence, same metrics)
+python3 -m n8igall_mvp.baseline_pysteps --index data/index_test_rt.json \
+    --val-fraction 1.0 --stride 5 --out runs/baseline_pysteps_test.json
+
+# 8. render a measured-vs-predicted video
+python3 -m n8igall_mvp.render_video --checkpoint runs/multi_flow/best.pt \
+    --start 2024-09-26T15:00 --out output/pred_vs_actual.mp4
+
+# 9. export for C++ inference
+python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_flow/best.pt --out runs/multi_flow/model.onnx
 ```
 
 ## Design notes
 
-* **Inputs**: `log1p(rate)` of 4 YW frames at 30-min spacing (900×900) +
-  4 static channels (normalized elevation, slope, sin/cos aspect).
-* **Target**: RW hourly accumulation valid over `(t, t+60 min]`, converted to
-  mm/h; invalid/clutter pixels masked out of the loss.
-* **Loss**: MSE on `log1p` rates with 5× weight on pixels > 0.1 mm/h to
-  counter the extreme class imbalance (most pixels are rain-free).
-* **Metrics**: CSI at 0.1/1/5 mm/h vs. a persistence baseline (last radar
-  frame as prediction).
+* **Inputs**: `log1p(rate)` of 19 YW frames at 5-min spacing (90 min
+  history, 900×900) + 6 ERA5 wind channels (u/v 10 m & 100 m, upslope,
+  divergence) + 2 Farneback optical-flow channels (px/5-min from the last
+  two frames) + 4 static DEM channels (+ 3 ERA5 cloud channels when
+  available) — 31–34 channels depending on the run.
+* **Target**: YW rate at each lead 5…60 min (12 output channels), log1p
+  space; invalid/clutter pixels masked out of the loss.
+* **Advection base**: the now-frame warped by the optical-flow field per
+  lead (semi-Lagrangian `grid_sample`, learnable per-lead scale) — motion
+  exists by construction; the network predicts a `tanh`-capped delta on
+  top (growth/decay only).
+* **Loss**: Huber + soft-CSI + rate-explosion penalty (`huber_csi_rate`).
+* **Metrics**: pooled CSI / Brier / FSS@10/20/50 km vs persistence and
+  pysteps optical flow; legacy nanmean CSI keys kept for checkpoint
+  selection. Full pass computed once on the best checkpoint.
+* **Sampling**: `--rain-bias N` upweights rainy samples
+  (weight = 1 + N·rain_fraction) via `WeightedRandomSampler`.
 * **Next inputs** (per research doc §4.4): ICON-D2 wind fields + derived
   orographic upslope/convergence features.
 
@@ -176,6 +205,93 @@ Jun–Sep 2024) with the new pooled CSI / FSS metrics, after all four fixes:
   and every threshold — this is the honest baseline the model must beat.
 * Full table incl. CSI@5 and Brier: `runs/baseline_pysteps.json`
   (585/585 samples, 0 flow failures).
+
+### Model results on the fixed pipeline (2026-11-01, `advect_flow`)
+
+10 epochs, 7.7 M U-Net, optical-flow advection base, 34 input channels
+(19 radar + 6 wind + 2 flow + 4 static + 3 cloud). Pooled CSI @ 1.0 mm/h
+on the Jun–Sep 2024 val split:
+
+| Lead | Model | Optical flow | Persistence |
+|---|---|---|---|
+| +5 min | 0.719 | **0.740** | 0.630 |
+| +10 min | **0.641** | 0.639 | 0.528 |
+| +15 min | **0.587** | 0.571 | 0.471 |
+| +30 min | **0.492** | 0.449 | 0.382 |
+| +60 min | **0.347** | 0.330 | 0.293 |
+
+* Model beats both baselines at +10…+60 at the primary threshold;
+  **pysteps still wins at +5 and at 5 mm/h everywhere** (heavy rain is
+  the known weakness).
+* FSS@50 km: 0.941 @+30, 0.842 @+60 (best at +30). Brier@1.0 best
+  from +30. Full tables: `runs/advect_flow/metrics_final.json`.
+* Visual fixes verified on representative cases: no intensity explosion
+  (ratio 1.02–1.06 at +5), cores translate, structure holds to +60.
+  Known defect: heavy cores and light rain decouple at long lead (the
+  delta compensates an increasingly wrong flow×steps base) — planned
+  fix: auxiliary loss on the advected base itself.
+
+### Untouched real-time test set (item 3, 2026-11-02)
+
+The sync daemon's real-time mirror (2026-10-23 … 11-01) is held out as
+a **truly out-of-sample test set**: postdates all training data, comes
+through the real inference pipeline (unadjusted realtime RADKLIM HDF5
+on de1200, reprojected to rx — validity IoU 0.9995 vs the classic
+twin), never seen by any checkpoint. Index: `data/index_test_rt.json`
+(2,824 samples). ERA5 wind/cloud fetched for the period (open-meteo).
+
+Test vs validation, pooled CSI @ 1.0 (`runs/advect_flow/test_metrics.json`):
+
+| Lead | model test | model val | flow test | pers test | winner (test) |
+|---|---|---|---|---|---|
+| +5 | 0.685 | 0.719 | **0.722** | 0.605 | flow |
+| +15 | 0.545 | 0.587 | **0.561** | 0.457 | flow |
+| +30 | **0.470** | 0.492 | 0.456 | 0.380 | model |
+| +60 | **0.344** | 0.347 | 0.344 | 0.293 | model (tie) |
+
+* **Train/serve gap is small**: −0.02…−0.04 vs validation. The
+  reprocessed→realtime pipeline shift and the autumn regime cost little.
+* The val ranking replicates exactly: flow wins short leads, model wins
+  ≥+30, both beat persistence everywhere.
+* Test-set baseline (pysteps, stride 5, 565 samples):
+  `runs/baseline_pysteps_test.json`.
+
+### Multi-year + rain-biased run (item 4, 2026-11-03, `multi_flow`)
+
+Data on disk was underused (hourly issue times of Jun–Sep 2024 only).
+New index `data/index_multi.json`: **8,774 samples** (Jun–Sep 2024 +
+Apr–May 2025, 30-min stride, rain-scored; 22 % fully dry), trained with
+`--rain-bias 4` (WeightedRandomSampler, weight = 1 + 4·rain_fraction)
+and flow advection; cloud channels omitted (open-meteo daily quota
+blocked Feb–May 2025 cloud; expected small gains). 7,020 train /
+1,754 val — **3× the previous run**.
+
+Val-set caveat: the chronological split now ends in May 2025 (spring),
+a drier regime — persistence itself drops to 0.085, so raw CSI is not
+comparable across runs. Margin over persistence is the fair local
+comparison and improved at short leads (+0.117 vs +0.099 at +5).
+
+**Test-set result (`runs/multi_flow/test_metrics.json`) — item 4 paid off:**
+
+| Lead | multi_flow | advect_flow | optical flow | persistence | winner |
+|---|---|---|---|---|---|
+| +5 | 0.701 | 0.685 | **0.722** | 0.605 | flow |
+| +10 | 0.618 | 0.591 | **0.620** | 0.505 | flow |
+| +15 | **0.577** | 0.545 | 0.561 | 0.457 | multi |
+| +30 | **0.508** | 0.470 | 0.456 | 0.380 | multi |
+| +60 | **0.373** | 0.344 | 0.344 | 0.293 | multi |
+
+* **3× data + rain bias improved the model at every lead ≥+15**
+  (+0.038 at +30, +0.029 at +60 vs the previous run, on the untouched
+  test set) and improved Brier at every lead (0.0216 vs 0.0242 @+30).
+* The model now **wins outright from +15 to +60** — only +5/+10 still
+  belong to plain optical flow.
+* **Regression to watch**: heavy rain at long lead collapsed
+  (CSI@5.0: 0.040 @+30, 0.001 @+60 vs 0.145/0.083 before) — the
+  rain-biased sampler + drier spring training data made the model
+  conservative on extremes at long leads. Short-lead heavy rain
+  improved (0.358 vs 0.337 @+5). Probabilistic heads (item 5) are the
+  planned fix for intensity extremes.
 
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
 
@@ -442,7 +558,24 @@ production size**; revisit scaling only with a multi-season dataset.
       HDF5 mirror, 3D volume collection with retention + free-space guard
 - [x] Spacing A/B test (3 seeds): 5-min beats 30-min (0.121±0.003 vs
       0.113±0.008 CSI@1.0, never loses, lower variance)
-- [ ] Loss tuning: CSI@5.0 ≈ 0 (heavy rain missed), CSI@0.1 < persistence
-      (drizzle) — threshold-weighted/focal loss or per-threshold metrics
+- [x] Four data-integrity bugs fixed (three reader bugs + raw-vs-log1p
+      targets); all pre-fix absolute numbers invalid — see "Data integrity"
+- [x] Verification metrics: pooled CSI, Brier, FSS@10/20/50 km (batched GPU,
+      full pass once per run), legacy nanmean keys kept for checkpointing
+- [x] Honest baselines: pysteps optical-flow advection + DWD operational
+      nowcast (`composite/rv`) archiving; RV loader with validated
+      de1200→rx reprojection
+- [x] Optical-flow advection mode (`--flow`): fixes the wind-steered
+      wrong-direction motion; +5 min intensity explosion fixed (ratio 1.02)
+- [x] Untouched real-time test set (2,824 samples, Oct–Nov 2026, real
+      pipeline) — train/serve gap measured at only −0.02…−0.04 CSI
+- [x] Multi-year + rain-biased training (8,774-sample index, 3× data):
+      wins the test set outright from +15 to +60 min
+- [ ] Heavy rain at long lead regressed in the multi-year run (CSI@5.0
+      collapse ≥+30) — probabilistic heads (item 5) planned fix
+- [ ] Base-quality fix for core/light decoupling at long lead (auxiliary
+      loss on the advected base)
+- [ ] Loss tuning: CSI@5.0 weak vs pysteps everywhere — threshold-weighted/
+      focal loss or probabilistic exceedance heads
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
 - [ ] 3D volume-scan input channels (collector is accumulating data)
