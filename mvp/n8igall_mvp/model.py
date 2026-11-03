@@ -38,7 +38,8 @@ class UNet(nn.Module):
                  out_channels: int = 1, residual_from: int | None = None,
                  delta_cap: float | None = None,
                  advect: dict | None = None,
-                 exceedance: list[float] | None = None):
+                 exceedance: list[float] | None = None,
+                 base_loss_weight: float = 0.0):
         """U-Net predicting log1p rain rates.
 
         ``residual_from``: channel index of the "now" radar frame. When set,
@@ -68,6 +69,13 @@ class UNet(nn.Module):
         self.delta_cap = delta_cap
         self.advect_cfg = advect
         self.exceedance = list(exceedance) if exceedance else None
+        # auxiliary base loss: when > 0 (training), forward stashes the
+        # advected base in ``last_base`` so the loop can penalize
+        # base-vs-target directly. Without it the network learns to shrink
+        # advect_scale to ~0 (frozen base) and paints everything with the
+        # delta - heavy cores then never move.
+        self.base_loss_weight = base_loss_weight
+        self.last_base: torch.Tensor | None = None
         if advect is not None:
             assert residual_from is not None, "advect requires residual mode"
             assert out_channels == len(advect["leads"]), \
@@ -168,6 +176,8 @@ class UNet(nn.Module):
                 # hard bound on the delta: the prediction can never exceed
                 # expm1(base + cap) mm/h, killing hallucinated spikes
                 out = self.delta_cap * torch.tanh(out / self.delta_cap)
+            if self.training and self.base_loss_weight > 0:
+                self.last_base = base
             if not self.training:
                 # inference-time clamp: the delta may not subtract from
                 # heavy base pixels (regression-to-the-mean erased ~97% of

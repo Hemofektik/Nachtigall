@@ -308,6 +308,10 @@ def main(argv: list[str] | None = None) -> int:
                         "(item 5; e.g. 0.1,1,5)")
     p.add_argument("--bce-weight", type=float, default=1.0,
                    help="weight of the exceedance BCE term in the total loss")
+    p.add_argument("--base-loss", type=float, default=0.0,
+                   help="auxiliary loss weight forcing the advected base "
+                        "toward the target (fixes frozen-base: the network "
+                        "otherwise shrinks advect_scale to ~0)")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -434,7 +438,8 @@ def main(argv: list[str] | None = None) -> int:
                  residual_from=residual_from,
                  delta_cap=args.delta_cap,
                  advect=advect_cfg,
-                 exceedance=exceedance).to(device)
+                 exceedance=exceedance,
+                 base_loss_weight=args.base_loss).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
@@ -467,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
                     exceedance_bce_loss(prob_logits, y, mask, exceedance)
             else:
                 loss = loss_fn(out, y, mask)
+            if model.last_base is not None:
+                # base-quality term: the advected base itself must predict
+                # the target, so advect_scale cannot collapse to ~0
+                loss = loss + args.base_loss * weighted_huber_loss(
+                    model.last_base, y, mask)
+                model.last_base = None
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
