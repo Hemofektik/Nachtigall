@@ -36,14 +36,17 @@ def main(argv: list[str] | None = None) -> int:
                  out_channels=out_channels,
                  residual_from=ckpt.get("residual_from"),
                  delta_cap=ckpt.get("delta_cap"),
-                 advect=ckpt.get("advect"))
+                 advect=ckpt.get("advect"),
+                 exceedance=ckpt.get("exceedance"))
     model.load_state_dict(ckpt["model"])
     model.eval()
 
     dummy = torch.zeros(1, ckpt["in_channels"], args.height, args.width)
+    has_prob = bool(ckpt.get("exceedance"))
     torch.onnx.export(
         model, dummy, str(args.out),
-        input_names=["input"], output_names=["output"],
+        input_names=["input"],
+        output_names=["output", "prob_logits"] if has_prob else ["output"],
         opset_version=args.opset, dynamo=False,
         dynamic_axes={"input": {2: "h", 3: "w"}, "output": {2: "h", 3: "w"}},
     )
@@ -51,7 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     # Parity check against onnxruntime
     import onnxruntime as ort
     with torch.no_grad():
-        ref = model(dummy).numpy()
+        ref = model(dummy)
+        ref = ref[0] if isinstance(ref, tuple) else ref
+        ref = ref.numpy()
     sess = ort.InferenceSession(str(args.out), providers=["CPUExecutionProvider"])
     out = sess.run(None, {"input": dummy.numpy()})[0]
     max_err = float(np.abs(ref - out).max())

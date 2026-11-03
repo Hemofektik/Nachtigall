@@ -43,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
                  out_channels=len(leads) if leads else 1,
                  residual_from=ckpt["residual_from"],
                  delta_cap=ckpt["delta_cap"],
-                 advect=ckpt["advect"])
+                 advect=ckpt["advect"],
+                 exceedance=ckpt.get("exceedance"))
     model.load_state_dict(ckpt["model"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)

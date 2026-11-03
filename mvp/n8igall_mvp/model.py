@@ -30,10 +30,15 @@ def _block(cin: int, cout: int) -> nn.Sequential:
 
 
 class UNet(nn.Module):
+    # heavy-rain threshold for the inference-time clamp: the delta may not
+    # subtract from base pixels above this rate (see forward)
+    HEAVY_MMH = 5.0
+
     def __init__(self, in_channels: int, base: int = 32, depth: int = 3,
                  out_channels: int = 1, residual_from: int | None = None,
                  delta_cap: float | None = None,
-                 advect: dict | None = None):
+                 advect: dict | None = None,
+                 exceedance: list[float] | None = None):
         """U-Net predicting log1p rain rates.
 
         ``residual_from``: channel index of the "now" radar frame. When set,
@@ -50,11 +55,19 @@ class UNet(nn.Module):
         advected field. ``mode="wind"`` (default): u/v are m/s at 100 m
         (ERA5). ``mode="flow"``: u/v are dense optical-flow displacements in
         px per 5-min step, computed from the last two radar frames.
+
+        ``exceedance``: mm/h thresholds for optional probability heads
+        (item 5). When set, an extra 1x1 head predicts logits for
+        P(rate > t) per lead and threshold (channel order lead-major:
+        ``i * len(exceedance) + j``), trained with class-balanced BCE so
+        rare heavy-rain pixels get direct gradient instead of being
+        averaged away by intensity regression.
         """
         super().__init__()
         self.residual_from = residual_from
         self.delta_cap = delta_cap
         self.advect_cfg = advect
+        self.exceedance = list(exceedance) if exceedance else None
         if advect is not None:
             assert residual_from is not None, "advect requires residual mode"
             assert out_channels == len(advect["leads"]), \
@@ -84,6 +97,9 @@ class UNet(nn.Module):
             self.dec.append(_block(skip_ch * 2, skip_ch))
 
         self.head = nn.Conv2d(chans[0], out_channels, 1)
+        if self.exceedance:
+            self.head_prob = nn.Conv2d(chans[0],
+                                       out_channels * len(self.exceedance), 1)
 
     def _advect(self, now: torch.Tensor, u: torch.Tensor,
                 v: torch.Tensor, lead_min: float, lead_i: int) -> torch.Tensor:
@@ -134,8 +150,9 @@ class UNet(nn.Module):
             x = self.dec[i](x)  # upsample
             x = torch.cat([x, skips.pop()], dim=1)
             x = self.dec[i + 1](x)
-        out = self.head(x)
-        out = out[..., :h, :w]
+        dec = x[..., :h, :w]
+        out = self.head(dec)
+        prob_logits = self.head_prob(dec) if self.exceedance else None
         if self.residual_from is not None:
             # residual base: the now-frame, optionally advected per lead
             now = x_orig[:, self.residual_from:self.residual_from + 1]
@@ -151,7 +168,17 @@ class UNet(nn.Module):
                 # hard bound on the delta: the prediction can never exceed
                 # expm1(base + cap) mm/h, killing hallucinated spikes
                 out = self.delta_cap * torch.tanh(out / self.delta_cap)
+            if not self.training:
+                # inference-time clamp: the delta may not subtract from
+                # heavy base pixels (regression-to-the-mean erased ~97% of
+                # >5 mm/h pixels the advection base had correctly moved;
+                # clamping recovers CSI@5 from 0.001 to the base level at
+                # +60 with zero cost at 0.1/1.0 mm/h - ceiling test 2026-11-03)
+                heavy = base > math.log1p(self.HEAVY_MMH)
+                out = torch.where(heavy, out.clamp(min=0.0), out)
             out = base + out
+        if prob_logits is not None:
+            return out, prob_logits
         return out
 
 
@@ -229,6 +256,34 @@ def rate_explosion_penalty(pred: torch.Tensor, target: torch.Tensor,
     """
     rate_over = F.relu(torch.expm1(pred) - torch.expm1(target))
     return weight * (rate_over * mask).sum() / mask.sum().clamp(min=1.0)
+
+
+def exceedance_bce_loss(prob_logits: torch.Tensor, target_log: torch.Tensor,
+                        mask: torch.Tensor, thresholds: list[float],
+                        max_pos_weight: float = 50.0) -> torch.Tensor:
+    """Class-balanced BCE on the P(rate > t) heads (item 5).
+
+    ``prob_logits``: [B, L*J, H, W] lead-major (channel i*J + j).
+    ``target_log``: [B, L, H, W] log1p(rate); ``mask``: [B, L, H, W] bool.
+
+    Positives (pixels above t) are up-weighted by neg/pos (clamped) so rare
+    heavy-rain pixels carry gradient comparable to the bulk — the fix for
+    regression-to-the-mean erasing extremes. Mean over thresholds and leads.
+    """
+    B, L, H, W = target_log.shape
+    J = len(thresholds)
+    logits = prob_logits.reshape(B, L, J, H, W)
+    terms = []
+    for j, t in enumerate(thresholds):
+        pos = (target_log > math.log1p(t)) & mask
+        n_pos = pos.sum().clamp(min=1.0)
+        n_neg = (mask.sum() - pos.sum()).clamp(min=1.0)
+        pw = (n_neg / n_pos).clamp(1.0, max_pos_weight)
+        bce = F.binary_cross_entropy_with_logits(
+            logits[:, :, j], pos.float(), reduction="none")
+        w = torch.where(pos, pw, torch.ones_like(pw))
+        terms.append((bce * w * mask).sum() / (w * mask).sum().clamp(min=1.0))
+    return torch.stack(terms).mean()
 
 
 def csi(pred_rate: torch.Tensor, target_rate: torch.Tensor,

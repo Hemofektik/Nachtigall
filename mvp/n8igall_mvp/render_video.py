@@ -125,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
                  out_channels=len(model_leads),
                  residual_from=ckpt.get("residual_from"),
                  delta_cap=ckpt.get("delta_cap"),
-                 advect=ckpt.get("advect"))
+                 advect=ckpt.get("advect"),
+                 exceedance=ckpt.get("exceedance"))
     model.load_state_dict(ckpt["model"])
     model.eval()
 
@@ -146,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     # One issue time: model outputs for all discrete leads + input frame.
     x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)
     with torch.no_grad():
-        pred_all = model(torch.from_numpy(x)[None]).numpy()[0]  # [7,H,W]
+        out = model(torch.from_numpy(x)[None])
+        pred_all = (out[0] if isinstance(out, tuple) else out).numpy()[0]
     input_now = np.expm1(x[18])  # radar frame at issue time t (last of 19)
 
     cmap = PRECIP_CMAP.copy()

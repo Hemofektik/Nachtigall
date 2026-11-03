@@ -23,8 +23,8 @@ from scipy.ndimage import uniform_filter
 from torch.utils.data import DataLoader, Dataset
 
 from .dataset import Sample, load_sample
-from .model import (UNet, csi, rate_explosion_penalty, soft_csi_loss,
-                    weighted_huber_loss, weighted_mse_loss)
+from .model import (UNet, csi, exceedance_bce_loss, rate_explosion_penalty,
+                    soft_csi_loss, weighted_huber_loss, weighted_mse_loss)
 
 
 def make_loss(name: str):
@@ -167,6 +167,9 @@ def evaluate(model, loader, device, radar_channels: int,
     n_leads = len(leads)
     csi_model = {(L, t): [] for L in leads for t in thresholds}
     csi_pers = {(L, t): [] for L in leads for t in thresholds}
+    # prob-head CSI (only when the model has exceedance heads)
+    exc = getattr(model, "exceedance", None) or []
+    csi_prob = {(L, t): [] for L in leads for t in exc}
     # pooled accumulators as python scalars: (who, lead_idx, thr) -> dict
     acc = {}
     for who in ("m", "p"):
@@ -180,7 +183,12 @@ def evaluate(model, loader, device, radar_channels: int,
     with torch.no_grad():
         for x, y, mask in loader:
             x, y, mask = x.to(device), y.to(device), mask.to(device)
-            pred = model(x)
+            out = model(x)
+            prob_logits = None
+            if isinstance(out, tuple):
+                pred, prob_logits = out
+            else:
+                pred = out
             loss_sum += weighted_mse_loss(pred, y, mask).item() * y.shape[0]
             n += y.shape[0]
             last_radar = torch.expm1(x[:, radar_channels - 1])  # [B,H,W]
@@ -196,6 +204,18 @@ def evaluate(model, loader, device, radar_channels: int,
                         csi(pred_rate[:, i], y_rate[:, i], mask[:, i], t))
                     csi_pers[(L, t)].append(
                         csi(last_radar, y_rate[:, i], mask[:, i], t))
+            if prob_logits is not None and exc:
+                # prob-head exceedance predictions -> CSI at matching thresholds
+                J = len(exc)
+                pl = prob_logits.reshape(x.shape[0], n_leads, J,
+                                         *x.shape[-2:])
+                for i, L in enumerate(leads):
+                    for j, t in enumerate(exc):
+                        p_rate = torch.where(pl[:, i, j] > 0,
+                                             torch.full_like(y_rate[:, i], 1e9),
+                                             torch.zeros_like(y_rate[:, i]))
+                        csi_prob[(L, t)].append(
+                            csi(p_rate, y_rate[:, i], mask[:, i], t))
 
             # pooled counts + Brier (vectorized over batch and leads)
             pers = last_radar[:, None].expand(-1, n_leads, -1, -1)  # [B,L,H,W]
@@ -252,6 +272,8 @@ def evaluate(model, loader, device, radar_channels: int,
             key = f"csi_lead{L}_{t}"
             out[key] = float(np.nanmean(csi_model[(L, t)]))
             out[f"{key}_pers"] = float(np.nanmean(csi_pers[(L, t)]))
+            if csi_prob.get((L, t)):
+                out[f"{key}_prob"] = float(np.nanmean(csi_prob[(L, t)]))
             for who, tag in (("m", ""), ("p", "_pers")):
                 st = acc[(who, i, t)]
                 if not full_metrics:
@@ -280,6 +302,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rain-bias", type=float, default=0.0,
                    help="upweight rainy training samples: sampling weight = "
                         "1 + bias * rain_fraction (0 = uniform shuffle)")
+    p.add_argument("--exceedance", type=str, default="",
+                   help="comma-separated mm/h thresholds for probability "
+                        "heads P(rate>t) trained with class-balanced BCE "
+                        "(item 5; e.g. 0.1,1,5)")
+    p.add_argument("--bce-weight", type=float, default=1.0,
+                   help="weight of the exceedance BCE term in the total loss")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -317,6 +345,9 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     leads = [int(v) for v in args.leads.split(",") if v] or None
+    exceedance = [float(v) for v in args.exceedance.split(",") if v] or None
+    if exceedance and not leads:
+        raise SystemExit("--exceedance requires --leads")
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -402,7 +433,8 @@ def main(argv: list[str] | None = None) -> int:
                  out_channels=out_channels,
                  residual_from=residual_from,
                  delta_cap=args.delta_cap,
-                 advect=advect_cfg).to(device)
+                 advect=advect_cfg,
+                 exceedance=exceedance).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params/1e6:.2f}M "
           f"train={len(train_ds)} val={len(val_ds)} in_ch={in_channels} "
@@ -428,7 +460,13 @@ def main(argv: list[str] | None = None) -> int:
         t0, running = time.time(), 0.0
         for i, (x, y, mask) in enumerate(train_dl):
             x, y, mask = x.to(device), y.to(device), mask.to(device)
-            loss = loss_fn(model(x), y, mask)
+            out = model(x)
+            if exceedance:
+                pred, prob_logits = out
+                loss = loss_fn(pred, y, mask) + args.bce_weight * \
+                    exceedance_bce_loss(prob_logits, y, mask, exceedance)
+            else:
+                loss = loss_fn(out, y, mask)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -464,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
                         "residual_from": residual_from,
                         "delta_cap": args.delta_cap,
                         "advect": advect_cfg,
+                        "exceedance": exceedance,
                         "leads": leads,
                         "val": val}, args.out / "best.pt")
 
@@ -472,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 "residual_from": residual_from,
                 "delta_cap": args.delta_cap,
                 "advect": advect_cfg,
+                "exceedance": exceedance,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
 
