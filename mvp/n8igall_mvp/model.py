@@ -121,8 +121,13 @@ class UNet(nn.Module):
         scale = self.advect_scale[lead_i]
         if self.advect_mode == "flow":
             steps = (float(lead_min) / 5.0) * scale
+            # u eastward, v SOUTHWARD (Farneback row direction): destination
+            # (r,c) samples the source the parcel came from, i.e. north of a
+            # southward-moving parcel -> dy = -v*steps. (v sign was flipped
+            # here, inverting all vertical motion in the base - the reason
+            # the base loss shrank advect_scale to ~0.)
             dx = -u * steps   # source offset, east positive
-            dy = v * steps    # source offset, south positive
+            dy = -v * steps   # source offset, south positive
         else:
             dt = float(lead_min) * 60.0
             dx = -u * (dt / 1000.0) * scale   # source offset, east positive
