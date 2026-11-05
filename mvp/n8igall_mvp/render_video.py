@@ -77,7 +77,8 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
 
 
 def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
-             wind, cloud, use_flow: bool, max_steps: int) -> np.ndarray:
+             wind, cloud, use_flow: bool, max_steps: int,
+             bias: float = 1.0) -> np.ndarray:
     """Autoregressive +5 min rollout: predict one step, feed it back.
 
     Returns [max_steps, H, W] log1p predictions at leads 5,10,...,5*max_steps.
@@ -109,6 +110,9 @@ def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
             out = model(torch.from_numpy(x)[None])
             pred = (out[0] if isinstance(out, tuple) else out)
             step5 = pred[0, 0]  # +5 min channel [H,W]
+            if bias != 1.0:
+                # debias in rate space: pred_log = log1p(expm1(pred)/bias)
+                step5 = torch.log1p(torch.expm1(step5.clamp(min=0)) / bias)
             preds.append(step5.numpy())
             hist = hist[1:] + [step5.numpy()]  # shift history
     return np.stack(preds)
@@ -156,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="autoregressive +5min rollout: predict one step, "
                         "feed it back as the new now-frame, repeat (each "
                         "step re-anchors via flow warp)")
+    p.add_argument("--rollout-bias", type=float, default=1.0,
+                   help="divide each rollout step by this factor (the +5 "
+                        "step over-predicts ~1.19x on the test set; 1.19 "
+                        "keeps the rollout unbiased)")
     p.add_argument("--out", type=Path,
                    default=_PKG_ROOT / "output" / "pred_vs_actual.mp4")
     args = p.parse_args(argv)
@@ -202,8 +210,10 @@ def main(argv: list[str] | None = None) -> int:
         print("rendering PURE OPTICAL-FLOW baseline (no model)")
     elif args.rollout:
         pred_all = _rollout(model, t, yw_root, static, wind, cloud,
-                            use_flow, max_steps=len(model_leads))
-        print(f"rendering AUTOREGRESSIVE +5min rollout ({len(model_leads)} steps)")
+                            use_flow, max_steps=len(model_leads),
+                            bias=args.rollout_bias)
+        print(f"rendering AUTOREGRESSIVE +5min rollout "
+              f"({len(model_leads)} steps, bias={args.rollout_bias})")
     else:
         with torch.no_grad():
             out = model(torch.from_numpy(x)[None])
