@@ -273,6 +273,27 @@ def rate_explosion_penalty(pred: torch.Tensor, target: torch.Tensor,
     return weight * (rate_over * mask).sum() / mask.sum().clamp(min=1.0)
 
 
+def gradient_l1_loss(pred: torch.Tensor, target: torch.Tensor,
+                     mask: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
+    """L1 on spatial finite differences of pred vs target (log1p space).
+
+    Directly penalizes smoothing: the delta blurs fine structure that the
+    advection base preserves, which is why predictions look softer than a
+    pure optical-flow warp. Central differences with neighbour-aware masks;
+    dry pixels contribute only where both sides are valid (their gradients
+    are ~0 anyway, so rainy texture dominates the term).
+    """
+    dx_p = pred[..., :, 1:] - pred[..., :, :-1]
+    dy_p = pred[..., 1:, :] - pred[..., :-1, :]
+    dx_t = target[..., :, 1:] - target[..., :, :-1]
+    dy_t = target[..., 1:, :] - target[..., :-1, :]
+    mx = mask[..., :, 1:] & mask[..., :, :-1]
+    my = mask[..., 1:, :] & mask[..., :-1, :]
+    lx = ((dx_p - dx_t).abs() * mx).sum() / mx.sum().clamp(min=1.0)
+    ly = ((dy_p - dy_t).abs() * my).sum() / my.sum().clamp(min=1.0)
+    return weight * (lx + ly)
+
+
 def exceedance_bce_loss(prob_logits: torch.Tensor, target_log: torch.Tensor,
                         mask: torch.Tensor, thresholds: list[float],
                         max_pos_weight: float = 50.0) -> torch.Tensor:

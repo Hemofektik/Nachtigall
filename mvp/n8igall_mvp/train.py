@@ -23,8 +23,9 @@ from scipy.ndimage import uniform_filter
 from torch.utils.data import DataLoader, Dataset
 
 from .dataset import Sample, load_sample
-from .model import (UNet, csi, exceedance_bce_loss, rate_explosion_penalty,
-                    soft_csi_loss, weighted_huber_loss, weighted_mse_loss)
+from .model import (UNet, csi, exceedance_bce_loss, gradient_l1_loss,
+                    rate_explosion_penalty, soft_csi_loss,
+                    weighted_huber_loss, weighted_mse_loss)
 
 
 def make_loss(name: str):
@@ -312,6 +313,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="auxiliary loss weight forcing the advected base "
                         "toward the target (fixes frozen-base: the network "
                         "otherwise shrinks advect_scale to ~0)")
+    p.add_argument("--grad-weight", type=float, default=0.0,
+                   help="gradient-domain L1 loss weight (preserves texture; "
+                        "counters the delta smoothing fine structure)")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -466,12 +470,15 @@ def main(argv: list[str] | None = None) -> int:
         for i, (x, y, mask) in enumerate(train_dl):
             x, y, mask = x.to(device), y.to(device), mask.to(device)
             out = model(x)
-            if exceedance:
+            if isinstance(out, tuple):
                 pred, prob_logits = out
                 loss = loss_fn(pred, y, mask) + args.bce_weight * \
                     exceedance_bce_loss(prob_logits, y, mask, exceedance)
             else:
-                loss = loss_fn(out, y, mask)
+                pred, prob_logits = out, None
+                loss = loss_fn(pred, y, mask)
+            if args.grad_weight > 0:
+                loss = loss + args.grad_weight * gradient_l1_loss(pred, y, mask)
             if model.last_base is not None:
                 # base-quality term: the advected base itself must predict
                 # the target, so advect_scale cannot collapse to ~0
