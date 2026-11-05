@@ -76,6 +76,44 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
     return x
 
 
+def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
+             wind, cloud, use_flow: bool, max_steps: int) -> np.ndarray:
+    """Autoregressive +5 min rollout: predict one step, feed it back.
+
+    Returns [max_steps, H, W] log1p predictions at leads 5,10,...,5*max_steps.
+    Each step rebuilds the 19-frame history (shifting out the oldest frame),
+    recomputes the optical-flow channels from the predicted frames, and takes
+    the model's +5 min output as the new now-frame. Every step is short-lead
+    where the model has proven skill; the flow warp inside the model
+    re-anchors texture each step.
+    """
+    from .dataset import optical_flow
+    # history of log1p frames, oldest first
+    hist = []
+    for i in range(19):
+        f = read_frame(_yw_path(yw_root, t - timedelta(minutes=5 * (18 - i))))
+        hist.append(np.where(f.valid, np.log1p(np.clip(f.data, 0, None)), 0.0)
+                    .astype(np.float32))
+    preds = []
+    with torch.no_grad():
+        for _ in range(max_steps):
+            x = np.stack(hist)
+            if use_flow:
+                raw_prev = np.expm1(hist[-2])
+                raw_now = np.expm1(hist[-1])
+                x = np.concatenate(
+                    [x, optical_flow(raw_prev, raw_now)], axis=0)
+            x = np.concatenate([x, wind.channels_for(t), static], axis=0)
+            if cloud is not None:
+                x = np.concatenate([x, cloud.channels_for(t)], axis=0)
+            out = model(torch.from_numpy(x)[None])
+            pred = (out[0] if isinstance(out, tuple) else out)
+            step5 = pred[0, 0]  # +5 min channel [H,W]
+            preds.append(step5.numpy())
+            hist = hist[1:] + [step5.numpy()]  # shift history
+    return np.stack(preds)
+
+
 def pred_at_lead(pred_all: np.ndarray, lead: int,
                  leads: list[int] | None = None) -> np.ndarray:
     """Model output at minute ``lead``, linearly interpolated between the
@@ -111,6 +149,13 @@ def main(argv: list[str] | None = None) -> int:
                         "<checkpoint_dir>/calibration.npz (fixes intensity "
                         "explosion without retraining)")
     p.add_argument("--fps", type=int, default=2)
+    p.add_argument("--baseline", choices=["none", "flow"], default="none",
+                   help="render a pure optical-flow advection forecast "
+                        "instead of the model (visual A/B)")
+    p.add_argument("--rollout", action="store_true",
+                   help="autoregressive +5min rollout: predict one step, "
+                        "feed it back as the new now-frame, repeat (each "
+                        "step re-anchors via flow warp)")
     p.add_argument("--out", type=Path,
                    default=_PKG_ROOT / "output" / "pred_vs_actual.mp4")
     args = p.parse_args(argv)
@@ -146,9 +191,23 @@ def main(argv: list[str] | None = None) -> int:
 
     # One issue time: model outputs for all discrete leads + input frame.
     x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)
-    with torch.no_grad():
-        out = model(torch.from_numpy(x)[None])
-        pred_all = (out[0] if isinstance(out, tuple) else out).numpy()[0]
+    if args.baseline == "flow":
+        from .baseline_pysteps import advect as _warp
+        from .dataset import optical_flow
+        now = np.expm1(x[18])
+        flow = optical_flow(np.expm1(x[17]), now)
+        pred_all = np.stack([
+            np.log1p(np.clip(_warp(now, flow, L / 5.0), 0, None))
+            for L in model_leads])
+        print("rendering PURE OPTICAL-FLOW baseline (no model)")
+    elif args.rollout:
+        pred_all = _rollout(model, t, yw_root, static, wind, cloud,
+                            use_flow, max_steps=len(model_leads))
+        print(f"rendering AUTOREGRESSIVE +5min rollout ({len(model_leads)} steps)")
+    else:
+        with torch.no_grad():
+            out = model(torch.from_numpy(x)[None])
+            pred_all = (out[0] if isinstance(out, tuple) else out).numpy()[0]
     input_now = np.expm1(x[18])  # radar frame at issue time t (last of 19)
 
     cmap = PRECIP_CMAP.copy()
