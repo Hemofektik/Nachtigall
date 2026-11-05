@@ -293,6 +293,85 @@ comparison and improved at short leads (+0.117 vs +0.099 at +5).
   improved (0.358 vs 0.337 @+5). Probabilistic heads (item 5) are the
   planned fix for intensity extremes.
 
+### Fifth bug: inverted vertical motion in flow advection (fixed 2026-11-04)
+
+User report: "heavy pixels do not move at all, they only decay — we
+built an optical-flow nowcaster 10 years ago that worked; must be a
+bug." Confirmed with a blob test: flow `v` is **southward** (Farneback
+row direction) but `_advect` flow mode used `dy = +v·steps` — the
+*northward-wind* formula — inverting every vertical motion in the base.
+East was correct. Cascade:
+
+1. Base moved rain the wrong way vertically → base-vs-target loss got
+   *worse* when moving → the base-quality loss rationally shrank
+   `advect_scale` to ~0 (0.014–0.165) → frozen base.
+2. The delta repainted rain at the current location → the +5 min
+   "explosion" (ratio 1.12–1.22) → regression-to-the-mean decay after.
+
+The pysteps baseline was unaffected (its own warp uses the correct
+sign) — which is exactly why the baseline worked and the model didn't.
+Fix: `dy = −v·steps` in flow mode; wind mode unchanged (its `v` is
+northward). Blob tests cover flow south/north/east + wind mode.
+
+**Effect (`multi_prob2`, retrained with the fix):** `advect_scale`
+learned ≈ **1.0–1.13 at every lead** (vs 0.014–0.165 before) — the
+base now advects at full flow strength. Heavy cores translate (~47 px
+east over 60 min vs 0 px before), CSI@5.0 regression head improved to
+0.505 @+5 / 0.174 @+30 (was 0.421/0.101), and the video keeps the
+heavy band at t+60. Remaining: mid-lead intensity overshoot (ratio
+peaks ~1.56 at +20), light rain still fades at +60.
+
+### Item 5 + base loss (`multi_prob` / `multi_prob2`)
+
+* `--exceedance 0.1,1,5`: probability heads P(rate>t) per lead,
+  class-balanced BCE (pos weight = neg/pos, clamped 50). Reported as
+  `csi_lead{L}_{t}_prob`.
+* `--base-loss 1.0`: auxiliary `weighted_huber(base, target)` so
+  `advect_scale` gets direct gradient (without it the network
+  shrinks the scale to ~0 — see fifth bug above).
+* `multi_prob2` = both + the sign fix; this is the current best
+  checkpoint (`runs/multi_prob2/best.pt`).
+
+### ONNX export (item 7, 2026-11-05)
+
+`export_onnx` on `multi_prob2/best.pt`: parity
+**max |pytorch − onnx| = 1.11e-06** (threshold 1e-4), both outputs
+(prediction + 36 prob-logit channels) exported to
+`runs/multi_prob2/model.onnx` (30.9 MB). The last unchecked box on
+the original list — C++ inference via ONNX Runtime is now unblocked.
+
+### Test-set results after the sign fix (`multi_prob2`, 2026-11-05)
+
+Untouched test set (2,824 real-time samples), pooled CSI:
+
+**@ 1.0 mm/h:**
+
+| Lead | prob2 | multi_flow | pysteps | pers |
+|---|---|---|---|---|
+| +5 | **0.705** | 0.701 | 0.722 | 0.605 |
+| +30 | 0.494 | **0.508** | 0.456 | 0.380 |
+| +60 | 0.345 | **0.373** | 0.344 | 0.293 |
+
+**@ 5.0 mm/h (heavy rain):**
+
+| Lead | prob2 | multi_flow (pre-fix) | pysteps | pers |
+|---|---|---|---|---|
+| +5 | 0.391 | 0.358 | **0.404** | 0.259 |
+| +15 | 0.218 | 0.162 | **0.223** | 0.137 |
+| +30 | **0.166** | 0.040 | 0.139 | 0.093 |
+| +60 | 0.078 | 0.001 | 0.077 | 0.055 |
+
+* **Heavy rain at +30: first model to beat pysteps** (0.166 vs 0.139),
+  4× the pre-sign-fix run — the inverted-motion bug was the cause of
+  the heavy-rain collapse, not the architecture.
+* CSI@1.0 at +30/+60 slightly below `multi_flow` (0.494 vs 0.508) —
+  base-loss + prob-heads trade a little primary metric for the
+  heavy-rain win; partly within seed noise.
+* The **prob heads underperform the clamped regression head** at CSI@5
+  (0.229 vs 0.391 @+5): clamp + regression is the better heavy-rain
+  strategy; prob heads remain useful as calibrated probabilities.
+* pysteps still wins +5/+10 (1.0) and +5/+15 (5.0).
+
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
 
 Same period, same seeds, same 80/20 chronological split, same 10 epochs,
@@ -571,11 +650,14 @@ production size**; revisit scaling only with a multi-season dataset.
       pipeline) — train/serve gap measured at only −0.02…−0.04 CSI
 - [x] Multi-year + rain-biased training (8,774-sample index, 3× data):
       wins the test set outright from +15 to +60 min
-- [ ] Heavy rain at long lead regressed in the multi-year run (CSI@5.0
-      collapse ≥+30) — probabilistic heads (item 5) planned fix
-- [ ] Base-quality fix for core/light decoupling at long lead (auxiliary
-      loss on the advected base)
-- [ ] Loss tuning: CSI@5.0 weak vs pysteps everywhere — threshold-weighted/
-      focal loss or probabilistic exceedance heads
+- [x] Fifth bug fixed: inverted vertical motion in flow advection —
+      `advect_scale` now learns ≈1.0 (was 0.014), heavy cores move
+- [x] Probabilistic exceedance heads (item 5) + base-quality loss
+      (`--exceedance 0.1,1,5 --base-loss 1.0`)
+- [x] ONNX export parity (item 7): 1.11e-06 max error, prob heads
+      included — C++ inference unblocked
+- [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
+- [ ] Light rain still fades to blur at +60 (deterministic regression)
+- [ ] Heavy rain at long lead: verify on test set after the sign fix
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
 - [ ] 3D volume-scan input channels (collector is accumulating data)
