@@ -152,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="apply quantile-mapping calibration from "
                         "<checkpoint_dir>/calibration.npz (fixes intensity "
                         "explosion without retraining)")
+    p.add_argument("--bias-calib", action="store_true",
+                   help="apply per-lead multiplicative bias correction from "
+                        "<checkpoint_dir>/bias_calib.npz (measured "
+                        "pred/obs ratios on the test set)")
     p.add_argument("--fps", type=int, default=2)
     p.add_argument("--baseline", choices=["none", "flow"], default="none",
                    help="render a pure optical-flow advection forecast "
@@ -240,6 +244,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"WARNING: no calibration at {calib_path}, rendering raw")
 
+    bias_f = None
+    if args.bias_calib:
+        bpath = args.checkpoint.parent / "bias_calib.npz"
+        if bpath.exists():
+            b = np.load(bpath)
+            bias_f = dict(zip(b["leads"].tolist(), b["factors"].tolist()))
+            print(f"applying per-lead bias correction from {bpath}")
+        else:
+            print(f"WARNING: no bias_calib at {bpath}, rendering raw")
+
     frames_data = []
     for lead in leads:
         valid_t = t + timedelta(minutes=lead)
@@ -256,6 +270,19 @@ def main(argv: list[str] | None = None) -> int:
             predicted = np.expm1(np.clip(
                 pred_at_lead(pred_all, lead, model_leads), 0, None)) \
                 * args.bias_correction
+            if bias_f is not None:
+                # per-lead multiplicative correction (interpolated between
+                # model leads if the playback grid has finer steps)
+                if lead in bias_f:
+                    predicted = predicted * bias_f[lead]
+                else:
+                    lo = max((l for l in model_leads if l <= lead),
+                             default=model_leads[0])
+                    hi = min((l for l in model_leads if l >= lead),
+                             default=model_leads[-1])
+                    w = 0 if hi == lo else (lead - lo) / (hi - lo)
+                    predicted = predicted * (bias_f.get(lo, 1.0) * (1 - w)
+                                             + bias_f.get(hi, 1.0) * w)
             if calib is not None:
                 # Per-lead quantile mapping in log space. The model only
                 # produces discrete leads (5,10,15,20,30,45,60); playback
