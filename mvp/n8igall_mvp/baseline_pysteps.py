@@ -28,6 +28,71 @@ LEADS_DEFAULT = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]
 THRESHOLDS = (0.1, 1.0, 5.0)
 
 
+def farneback_flow(prev: np.ndarray, curr: np.ndarray) -> np.ndarray:
+    """Dense Farneback flow [2,H,W] px/step (u=east, v=south)."""
+    import cv2
+    a = (np.clip(prev, 0, 50) / 50.0 * 255).astype(np.uint8)
+    b = (np.clip(curr, 0, 50) / 50.0 * 255).astype(np.uint8)
+    fl = cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    return np.transpose(fl, (2, 0, 1)).astype(np.float32)
+
+
+def coarse_flow(prev: np.ndarray, curr: np.ndarray, block: int = 16,
+                angle_out: float = 60.0, mad_k: float = 4.0) -> np.ndarray:
+    """Block-mean optical flow with outlier filtering (the proven design).
+
+    Dense per-pixel flow is noisy; storm motion is mostly coherent, so:
+
+    1. compute dense Farneback flow,
+    2. per ``block x block`` tile: drop pixel vectors far from the tile's
+       median (robust: convective outliers and dry-area noise don't drag
+       the mean), average the inliers,
+    3. drop tiles whose direction deviates more than ``angle_out`` degrees
+       from the *global* median direction (replace with that direction) -
+       outlier directions would otherwise mess with the mean,
+    4. bilinear-upsample the coarse field back to full resolution.
+
+    Returns [2,H,W] px/step (u=east, v=south).
+    """
+    import cv2
+    dense = farneback_flow(prev, curr)
+    H, W = dense.shape[1:]
+    Hp = -(-H // block) * block
+    Wp = -(-W // block) * block
+    pad = np.pad(dense, ((0, 0), (0, Hp - H), (0, Wp - W)), mode="edge")
+    Hb, Wb = Hp // block, Wp // block
+    vecs = pad.reshape(2, Hb, block, Wb, block) \
+              .transpose(0, 1, 3, 2, 4) \
+              .reshape(2, Hb, Wb, block * block) \
+              .transpose(1, 2, 3, 0)          # [Hb,Wb,n,2]
+    med = np.median(vecs, axis=2)             # [Hb,Wb,2]
+    dev = np.linalg.norm(vecs - med[:, :, None, :], axis=3)
+    thr = mad_k * np.median(dev, axis=2, keepdims=True)
+    thr = np.maximum(thr, 0.05)               # floor: constant fields keep all
+    inl = dev <= thr
+    cnt = inl.sum(axis=2, keepdims=True)
+    has = cnt[:, :, 0] > 0
+    sm = np.where(has[:, :, None],
+                  (vecs * inl[:, :, :, None]).sum(axis=2)
+                  / np.maximum(cnt, 1), med)  # [Hb,Wb,2]
+
+    # global direction filter: tiles disagreeing wildly with the median
+    # direction are noise (textureless dry areas) - use the global median
+    gmed = np.median(sm.reshape(-1, 2), axis=0)
+    gmag = float(np.linalg.norm(gmed))
+    if gmag > 0.1:
+        dot = sm @ gmed
+        cos = dot / (np.linalg.norm(sm, axis=2) * gmag + 1e-9)
+        ang = np.degrees(np.arccos(np.clip(cos, -1, 1)))
+        sm = np.where((ang > angle_out)[:, :, None], gmed[None, None, :], sm)
+
+    out = np.empty((2, Hp, Wp), dtype=np.float32)
+    for c in range(2):
+        out[c] = cv2.resize(sm[:, :, c], (Wp, Hp),
+                            interpolation=cv2.INTER_LINEAR)
+    return out[:, :H, :W]
+
+
 def advect(frame: np.ndarray, flow: np.ndarray, steps: float) -> np.ndarray:
     """Warp ``frame`` [H,W] by ``flow`` [H,W,2] (px per frame-step) x ``steps``.
 
@@ -59,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
                    help="0 = all validation samples")
     p.add_argument("--stride", type=int, default=1,
                    help="take every Nth sample (for large test sets)")
+    p.add_argument("--flow-mode", choices=["lk", "farneback", "coarse"],
+                   default="lk",
+                   help="lk = pysteps Lucas-Kanade (dense); farneback = "
+                        "dense Farneback; coarse = block-mean flow with "
+                        "outlier filtering (16px blocks)")
+    p.add_argument("--block", type=int, default=16,
+                   help="block size for --flow-mode coarse")
     args = p.parse_args(argv)
 
     from pysteps.motion.lucaskanade import dense_lucaskanade
@@ -87,7 +159,12 @@ def main(argv: list[str] | None = None) -> int:
         # optical flow from the last two frames (5-min spacing assumed
         # for the multi-lead YW index; matches the model's dt)
         try:
-            flow = dense_lucaskanade(radar[-2:].astype(np.float64))
+            if args.flow_mode == "coarse":
+                flow = coarse_flow(radar[-2], radar[-1], block=args.block)
+            elif args.flow_mode == "farneback":
+                flow = farneback_flow(radar[-2], radar[-1])
+            else:
+                flow = dense_lucaskanade(radar[-2:].astype(np.float64))
         except Exception:                 # noqa: BLE001 - skip degenerate frames
             n_flow_fail += 1
             continue
