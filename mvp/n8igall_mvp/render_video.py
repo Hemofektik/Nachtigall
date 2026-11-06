@@ -156,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="apply per-lead multiplicative bias correction from "
                         "<checkpoint_dir>/bias_calib.npz (measured "
                         "pred/obs ratios on the test set)")
+    p.add_argument("--sharpen", type=float, default=0.0,
+                   help="unsharp-mask amount applied to predictions in rate "
+                        "space: pred + a*(pred - gaussian_blur(pred, 1.0)); "
+                        "0 = off (e.g. 0.6)")
     p.add_argument("--fps", type=int, default=2)
     p.add_argument("--baseline", choices=["none", "flow"], default="none",
                    help="render a pure optical-flow advection forecast "
@@ -301,6 +305,13 @@ def main(argv: list[str] | None = None) -> int:
                     pq = calib[f"p{lo}"] * (1 - w) + calib[f"p{hi}"] * w
                     aq = calib[f"a{lo}"] * (1 - w) + calib[f"a{hi}"] * w
                 predicted = np.expm1(np.interp(np.log1p(predicted), pq, aq))
+            if args.sharpen > 0:
+                # unsharp mask in rate space: restore fine structure the
+                # delta smoothed away (visual only; keep >=0)
+                from scipy.ndimage import gaussian_filter
+                blur = gaussian_filter(predicted, sigma=1.0)
+                predicted = np.clip(
+                    predicted + args.sharpen * (predicted - blur), 0, None)
         frames_data.append((lead, valid_t, measured, predicted, valid))
 
     def draw(i: int) -> None:
