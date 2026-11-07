@@ -75,10 +75,14 @@ python3 -m n8igall_mvp.eval_checkpoint --checkpoint runs/multi_lk/best.pt \
     --index data/index_test_rt.json --flow --flow-cache data/index_test_rt_flow \
     --flow-estimator lk --out runs/multi_lk/test_metrics.json
 
-# 8. per-lead bias calibration (writes bias_calib.npz for render --bias-calib)
+# 8. per-lead bias calibration (writes bias_calib.npz for render
+#    --bias-calib). Fit on the TRAIN split - never on the test index,
+#    or the calibrated test number stops being honest. Step 7's
+#    uncalibrated eval is the clean score.
 python3 -m n8igall_mvp.compute_bias_calib --checkpoint runs/multi_lk/best.pt \
-    --index data/index_test_rt.json --flow --flow-cache data/index_test_rt_flow \
-    --flow-estimator lk --out runs/multi_lk/bias_calib.npz
+    --index data/index_multi.json --stride 40 --max-samples 120 \
+    --flow --flow-cache data/index_multi_flow --flow-estimator lk \
+    --rt-dir data/raw/yw --out runs/multi_lk/bias_calib.npz
 
 # 9. baselines (pysteps optical flow + persistence, same metrics)
 python3 -m n8igall_mvp.baseline_pysteps --index data/index_test_rt.json \
