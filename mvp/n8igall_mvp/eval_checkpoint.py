@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
                    default=Path("data/wind/era5_cloud.npz"))
     p.add_argument("--flow", action="store_true",
                    help="append optical-flow channels (match training)")
+    p.add_argument("--flow-cache", type=Path, default=None,
+                   help="precomputed LK flow cache stem (match training)")
+    p.add_argument("--flow-estimator", choices=["farneback", "lk"],
+                   default="farneback",
+                   help="estimator for cache misses (match training)")
     p.add_argument("--batch-size", type=int, default=1)
     args = p.parse_args(argv)
 
@@ -60,7 +65,9 @@ def main(argv: list[str] | None = None) -> int:
 
     ds = RadolanDataset(samples, crop=None, static_channels=static,
                         wind_sampler=wind, leads=leads,
-                        cloud_sampler=cloud, flow=args.flow)
+                        cloud_sampler=cloud, flow=args.flow,
+                        flow_cache=args.flow_cache,
+                        flow_estimator=args.flow_estimator)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
                     num_workers=4)
 

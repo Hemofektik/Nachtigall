@@ -51,7 +51,9 @@ class RadolanDataset(Dataset):
     def __init__(self, samples: list[Sample], crop: int | None = 512,
                  static_channels: np.ndarray | None = None,
                  wind_sampler=None, leads: list[int] | None = None,
-                 cloud_sampler=None, flow: bool = False):
+                 cloud_sampler=None, flow: bool = False,
+                 flow_cache: Path | None = None,
+                 flow_estimator: str = "farneback"):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
@@ -59,13 +61,43 @@ class RadolanDataset(Dataset):
         self.cloud = cloud_sampler     # CloudSampler or None
         self.leads = leads              # multi-lead target minutes or None
         self.flow = flow                # append optical-flow channels
+        self.flow_estimator = flow_estimator  # fallback estimator on miss
+        # Precomputed LK flow cache (ts-keyed memmap). Only the stem and
+        # timestamp table are pickled to dataloader workers; the memmap is
+        # opened lazily per worker (pickling it would load GBs into RAM).
+        self.flow_cache_stem = str(flow_cache) if flow_cache else None
+        self._mm = None
+        self._ts = None
+        self._mm_shape = None
+        if self.flow_cache_stem:
+            meta = json.loads(Path(self.flow_cache_stem + ".json").read_text())
+            self._ts = np.asarray(meta["ts"], dtype=np.int64)
+            self._mm_shape = (len(self._ts), *meta["shape"])
+
+    def _flow_field(self, sample: Sample) -> np.ndarray | None:
+        """Cached LK flow for this sample's issue time, or None on miss."""
+        if not self.flow_cache_stem:
+            return None
+        import re as _re
+        key = int(_re.search(r"-(\d{10})-", sample.inputs[-1]).group(1))
+        i = int(np.searchsorted(self._ts, key))
+        if i >= len(self._ts) or self._ts[i] != key:
+            return None
+        if self._mm is None:
+            self._mm = np.memmap(self.flow_cache_stem + ".f16",
+                                 dtype=np.float16, mode="r",
+                                 shape=self._mm_shape)
+        return self._mm[i]   # fp16; load_sample casts to float32
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int):
+        ff = self._flow_field(self.samples[idx]) if self.flow else None
         x, y, mask = load_sample(self.samples[idx], wind_sampler=self.wind,
-                                 leads=self.leads, flow=self.flow)
+                                 leads=self.leads, flow=self.flow,
+                                 flow_field=ff,
+                                 flow_estimator=self.flow_estimator)
         if self.static is not None:
             x = np.concatenate([x, self.static], axis=0)
         if self.cloud is not None:
@@ -336,9 +368,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="advect the now-frame by the steering field as the "
                         "residual base (requires --residual --leads)")
     p.add_argument("--flow", action="store_true",
-                   help="append Farneback optical-flow channels (px/5min, "
-                        "from the last two radar frames) and use them as "
-                        "the advection field instead of wind")
+                   help="append optical-flow channels (px/5min, from the "
+                        "last two radar frames) and use them as the "
+                        "advection field instead of wind")
+    p.add_argument("--flow-cache", type=Path, default=None,
+                   help="precomputed LK flow cache stem (<stem>.f16 + "
+                        "<stem>.json from build_flow_cache); on miss the "
+                        "estimator below is used")
+    p.add_argument("--flow-estimator", choices=["farneback", "lk"],
+                   default="farneback",
+                   help="flow estimator for cache misses (lk = the flow "
+                        "source of record, ~1.8s/sample")
     p.add_argument("--static", type=Path, default=None,
                    help=".npz with static channels [C_s, H, W]")
     p.add_argument("--cloud", type=Path, default=None,
@@ -384,10 +424,14 @@ def main(argv: list[str] | None = None) -> int:
 
     train_ds = RadolanDataset(train_s, crop=args.crop, static_channels=static,
                               wind_sampler=wind_sampler, leads=leads,
-                                cloud_sampler=cloud_sampler, flow=args.flow)
+                              cloud_sampler=cloud_sampler, flow=args.flow,
+                              flow_cache=args.flow_cache,
+                              flow_estimator=args.flow_estimator)
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
                             wind_sampler=wind_sampler, leads=leads,
-                              cloud_sampler=cloud_sampler, flow=args.flow)
+                            cloud_sampler=cloud_sampler, flow=args.flow,
+                            flow_cache=args.flow_cache,
+                            flow_estimator=args.flow_estimator)
     if args.rain_bias > 0 and any(getattr(s, "rain", 0) > 0 for s in train_s):
         # rain-biased sampling: rainy samples seen more often (weights are
         # per-epoch draw probabilities; dry samples still appear)
@@ -521,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
                         "delta_cap": args.delta_cap,
                         "advect": advect_cfg,
                         "exceedance": exceedance,
+                        "flow_estimator": args.flow_estimator,
                         "leads": leads,
                         "val": val}, args.out / "best.pt")
 
@@ -530,6 +575,7 @@ def main(argv: list[str] | None = None) -> int:
                 "delta_cap": args.delta_cap,
                 "advect": advect_cfg,
                 "exceedance": exceedance,
+                "flow_estimator": args.flow_estimator,
                 "leads": leads}, args.out / "last.pt")
     print(f"done. best CSI@1.0 = {best:.3f}")
 

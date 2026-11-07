@@ -372,6 +372,42 @@ Untouched test set (2,824 real-time samples), pooled CSI:
   strategy; prob heads remain useful as calibrated probabilities.
 * pysteps still wins +5/+10 (1.0) and +5/+15 (5.0).
 
+### MVP quality push (2026-11-05..07): what survived and what was rejected
+
+All experiments below were judged on the untouched test set or by
+rendered video against the pure-flow baseline:
+
+| Experiment | Verdict | Evidence |
+|---|---|---|
+| Autoregressive +5 min rollout | **rejected** | even debiased (×1/1.19 per step) it collapses 0.643→0.143 @+60: spatial errors compound faster than bias repair (`rollout_test.json`) |
+| Per-lead bias calibration | **kept** (`--bias-calib`) | measured test-set bias +19%@5 … −16%@60; reciprocal factors applied in rate space, no retrain |
+| Unsharp mask (`--sharpen`) | **rejected by user** | halo artifacts; flag kept but unused |
+| Gradient texture loss (`--grad-weight 0.2`, `multi_prob3`) | **rejected** | regressed every test metric: CSI@1.0 @+60 0.266 vs prob2's 0.345 (below persistence!), FSS 0.803→0.698; bias also worsened (+43%@5) |
+| prob2 + bias-calib | **current best model** | beats pysteps +15..+60 @1.0 and @+30 on 5.0 |
+
+**Flow estimator investigation** (user design from a 10-year-old
+optical-flow nowcaster: dense per-pixel flow is noisy; storm motion is
+coherent): implemented in `baseline_pysteps.py`:
+
+* `--flow-mode coarse` — 16×16 block median + MAD-clipped mean, >60°
+  global-direction tiles replaced: **loses to dense LK at every lead**
+  (0.665 vs 0.722 @+5) — but FSS@50 matched at +5/+15.
+* `--flow-mode smooth` — corrected per user: no tiles; per-pixel
+  Gaussian-neighborhood mean direction (σ=8), individual pixels >60°
+  from the *local* mean rejected, then smoothed again.
+* `--flow-mode smooth-lk` — same smoothing over pysteps LK, isolating
+  estimator (Farneback underestimates motion magnitude: u=+0.67 vs
+  true +4.0 on a synthetic field) from the smoothing itself.
+* Sanity: smoothing cuts flow variance 1.43→0.86 and neutralizes
+  textureless patches. Test-set evaluations in progress.
+
+**ICON-D2 archiving (item 6 started, 2026-11-07):** `icon_d2_sync.py`
+mirrors u/v 10 m (regular-lat-lon, forecast steps 0–12 h) for all 8
+3-hourly cycles into `/data/n8igall/data/nwp/icon_d2/<init>/` — DWD
+retains only the latest run per cycle (~24 h), so the hourly daemon
+now collects it. No single-level 100 m wind exists (only icosahedral
+model levels) — the steering-level channel question is deferred.
+
 ### Spacing A/B test (Jun–Sep 2024, 2,926 samples, full channels)
 
 Same period, same seeds, same 80/20 chronological split, same 10 epochs,

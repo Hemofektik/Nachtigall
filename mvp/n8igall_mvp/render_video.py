@@ -55,7 +55,8 @@ NO_DATA = "#dcdcdc"
 
 
 def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
-                   wind: WindSampler, cloud=None, flow: bool = False) -> np.ndarray:
+                   wind: WindSampler, cloud=None, flow: bool = False,
+                   flow_estimator: str = "farneback") -> np.ndarray:
     """[29/32/34, H, W] exactly as training's RadolanDataset order:
     19 radar + 6 wind + 2 flow (when enabled, right after wind - matching
     train.py's u_idx = n_radar + WIND_CHANNELS) + 4 static + 3 cloud."""
@@ -68,8 +69,10 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
     x = np.concatenate([np.stack(radar).astype(np.float32),
                         wind.channels_for(t)], axis=0)
     if flow:
-        from .dataset import optical_flow
-        x = np.concatenate([x, optical_flow(raw[-2], raw[-1])], axis=0)
+        from .dataset import lk_flow, optical_flow
+        ff = (lk_flow(raw[-2], raw[-1]) if flow_estimator == "lk"
+              else optical_flow(raw[-2], raw[-1]))
+        x = np.concatenate([x, ff], axis=0)
     x = np.concatenate([x, static], axis=0)
     if cloud is not None:
         x = np.concatenate([x, cloud.channels_for(t)], axis=0)
@@ -78,7 +81,7 @@ def assemble_input(yw_root: Path, t: datetime, static: np.ndarray,
 
 def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
              wind, cloud, use_flow: bool, max_steps: int,
-             bias: float = 1.0) -> np.ndarray:
+             bias: float = 1.0, flow_estimator: str = "farneback") -> np.ndarray:
     """Autoregressive +5 min rollout: predict one step, feed it back.
 
     Returns [max_steps, H, W] log1p predictions at leads 5,10,...,5*max_steps.
@@ -88,7 +91,7 @@ def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
     where the model has proven skill; the flow warp inside the model
     re-anchors texture each step.
     """
-    from .dataset import optical_flow
+    from .dataset import lk_flow, optical_flow
     # history of log1p frames, oldest first
     hist = []
     for i in range(19):
@@ -102,8 +105,9 @@ def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
             if use_flow:
                 raw_prev = np.expm1(hist[-2])
                 raw_now = np.expm1(hist[-1])
-                x = np.concatenate(
-                    [x, optical_flow(raw_prev, raw_now)], axis=0)
+                ff = (lk_flow(raw_prev, raw_now) if flow_estimator == "lk"
+                      else optical_flow(raw_prev, raw_now))
+                x = np.concatenate([x, ff], axis=0)
             x = np.concatenate([x, wind.channels_for(t), static], axis=0)
             if cloud is not None:
                 x = np.concatenate([x, cloud.channels_for(t)], axis=0)
@@ -205,9 +209,11 @@ def main(argv: list[str] | None = None) -> int:
         cloud = CloudSampler(_PKG_ROOT / "data" / "wind" / "era5_cloud.npz")
     use_flow = bool(ckpt.get("advect")
                     and ckpt["advect"].get("mode") == "flow")
+    flow_est = ckpt.get("flow_estimator", "farneback")
 
     # One issue time: model outputs for all discrete leads + input frame.
-    x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)
+    x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow,
+                       flow_estimator=flow_est)
     if args.baseline in ("flow", "lk"):
         from .baseline_pysteps import advect as _warp
         now = np.expm1(x[18])
@@ -226,7 +232,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.rollout:
         pred_all = _rollout(model, t, yw_root, static, wind, cloud,
                             use_flow, max_steps=len(model_leads),
-                            bias=args.rollout_bias)
+                            bias=args.rollout_bias,
+                            flow_estimator=flow_est)
         print(f"rendering AUTOREGRESSIVE +5min rollout "
               f"({len(model_leads)} steps, bias={args.rollout_bias})")
     else:
