@@ -1,20 +1,26 @@
 # Nachtigall MVP — +60 min precipitation nowcast
 
-Trains a compact U-Net to predict radar-derived precipitation (RW, mm/h) 60
-minutes ahead from recent RADOLAN YW radar history plus static terrain
-channels. See [`../docs/rain-radar-nowcasting-research.md`](../docs/rain-radar-nowcasting-research.md)
+Trains a 7.7 M-parameter U-Net to predict radar-derived precipitation
+(YW rate, mm/h) at leads 5…60 min from a 90-minute RADOLAN YW radar
+history plus ERA5 wind, optical-flow, static-terrain and (optionally)
+cloud channels, on an advection-residual base. See
+[`../docs/rain-radar-nowcasting-research.md`](../docs/rain-radar-nowcasting-research.md)
 for the research behind this design.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    A["RADKLIM YW<br/>5-min radar history"] --> D[dataset index]
-    B["RADKLIM RW<br/>hourly target"] --> D
+    A["RADKLIM YW<br/>19 x 5-min radar history"] --> D[dataset index]
+    B["YW rate at<br/>leads 5..60 min"] --> D
     C["Copernicus DEM<br/>elevation/slope/aspect"] --> S["static channels.npz"]
+    W["ERA5 wind<br/>(issue hour only)"] --> W2["wind channels"]
+    F["LK optical flow<br/>(cached, px/5min)"] --> F2["flow channels"]
     D --> T[PyTorch Dataset]
     S --> T
-    T --> M["U-Net (~0.5M params)"]
+    W2 --> T
+    F2 --> T
+    T --> M["U-Net 7.7M<br/>advection base + delta<br/>+ prob heads"]
     M --> E["ONNX export<br/>for C++ inference"]
 ```
 
@@ -50,50 +56,105 @@ python3 -m n8igall_mvp.build_test_index --rt-dir data/raw/yw \
     --start 2024-06-01 --end 2025-05-31T23:55 --issue-stride 30 \
     --rain-score --out data/index_multi.json
 
-# 5. train (pooled CSI / Brier / FSS on the best checkpoint at the end)
-python3 -m n8igall_mvp.train --index data/index_multi.json --out runs/multi_flow \
+# 5. LK flow cache (one-time; live LK would cost 3.6 h per epoch)
+python3 -m n8igall_mvp.build_flow_cache --index data/index_multi.json \
+    --out data/index_multi_flow --workers 16
+
+# 6. train (pooled CSI / Brier / FSS on the best checkpoint at the end;
+#    selection uses pooled CSI@1.0)
+python3 -m n8igall_mvp.train --index data/index_multi.json --out runs/multi_lk \
     --epochs 10 --batch-size 2 --crop 512 --base-channels 64 --depth 4 \
     --loss huber_csi_rate --residual --delta-cap 1.5 --advect --flow \
+    --flow-cache data/index_multi_flow --flow-estimator lk \
+    --exceedance 0.1,1,5 --bce-weight 1.0 --base-loss 1.0 \
     --rain-bias 4 --static data/static/channels.npz --wind data/wind/era5_wind.npz \
     --leads 5,10,15,20,25,30,35,40,45,50,55,60 --seed 0
 
-# 6. evaluate a checkpoint on any index (e.g. the untouched test set)
-python3 -m n8igall_mvp.eval_checkpoint --checkpoint runs/multi_flow/best.pt \
-    --index data/index_test_rt.json --flow --out runs/multi_flow/test_metrics.json
+# 7. evaluate a checkpoint on any index (e.g. the untouched test set)
+python3 -m n8igall_mvp.eval_checkpoint --checkpoint runs/multi_lk/best.pt \
+    --index data/index_test_rt.json --flow --flow-cache data/index_test_rt_flow \
+    --flow-estimator lk --out runs/multi_lk/test_metrics.json
 
-# 7. baselines (pysteps optical flow + persistence, same metrics)
+# 8. per-lead bias calibration (writes bias_calib.npz for render --bias-calib)
+python3 -m n8igall_mvp.compute_bias_calib --checkpoint runs/multi_lk/best.pt \
+    --index data/index_test_rt.json --flow --flow-cache data/index_test_rt_flow \
+    --flow-estimator lk --out runs/multi_lk/bias_calib.npz
+
+# 9. baselines (pysteps optical flow + persistence, same metrics)
 python3 -m n8igall_mvp.baseline_pysteps --index data/index_test_rt.json \
     --val-fraction 1.0 --stride 5 --out runs/baseline_pysteps_test.json
 
-# 8. render a measured-vs-predicted video
-python3 -m n8igall_mvp.render_video --checkpoint runs/multi_flow/best.pt \
-    --start 2024-09-26T15:00 --out output/pred_vs_actual.mp4
+# 10. render a measured-vs-predicted video
+python3 -m n8igall_mvp.render_video --checkpoint runs/multi_lk/best.pt \
+    --start 2024-09-26T15:00 --bias-calib --out output/pred_vs_actual.mp4
 
-# 9. export for C++ inference
-python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_flow/best.pt --out runs/multi_flow/model.onnx
+# 11. export for C++ inference
+python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_lk/best.pt --out runs/multi_lk/model.onnx
 ```
 
 ## Design notes
 
 * **Inputs**: `log1p(rate)` of 19 YW frames at 5-min spacing (90 min
   history, 900×900) + 6 ERA5 wind channels (u/v 10 m & 100 m, upslope,
-  divergence) + 2 Farneback optical-flow channels (px/5-min from the last
-  two frames) + 4 static DEM channels (+ 3 ERA5 cloud channels when
-  available) — 31–34 channels depending on the run.
+  divergence — **issue hour only**, no averaging into the forecast
+  window) + 2 optical-flow channels (px/5-min from the last two frames;
+  **pysteps LK** via the precomputed cache, Farneback legacy) + 4 static
+  DEM channels (+ 3 ERA5 cloud channels when available) — 31–34 channels
+  depending on the run.
 * **Target**: YW rate at each lead 5…60 min (12 output channels), log1p
   space; invalid/clutter pixels masked out of the loss.
 * **Advection base**: the now-frame warped by the optical-flow field per
   lead (semi-Lagrangian `grid_sample`, learnable per-lead scale) — motion
   exists by construction; the network predicts a `tanh`-capped delta on
-  top (growth/decay only).
-* **Loss**: Huber + soft-CSI + rate-explosion penalty (`huber_csi_rate`).
+  top (growth/decay only). Eval-mode clamp: the delta cannot subtract
+  from base pixels >5 mm/h.
+* **Loss**: Huber + soft-CSI + rate-explosion penalty (`huber_csi_rate`)
+  + `--base-loss` (advected base vs target, keeps `advect_scale` honest)
+  + `--bce-weight` × class-balanced BCE on the `--exceedance` probability
+  heads.
 * **Metrics**: pooled CSI / Brier / FSS@10/20/50 km vs persistence and
-  pysteps optical flow; legacy nanmean CSI keys kept for checkpoint
-  selection. Full pass computed once on the best checkpoint.
+  pysteps optical flow; **checkpoint selection uses pooled CSI@1.0**
+  (legacy nanmean keys still reported). Full FSS pass computed once on
+  the best checkpoint.
 * **Sampling**: `--rain-bias N` upweights rainy samples
   (weight = 1 + N·rain_fraction) via `WeightedRandomSampler`.
-* **Next inputs** (per research doc §4.4): ICON-D2 wind fields + derived
-  orographic upslope/convergence features.
+* **Next inputs** (per research doc §4.4): ICON-D2 forecast wind (archived
+  by `icon_d2_sync`, 7-day retention) to replace ERA5 reanalysis at
+  inference; 100 m steering-level wind needs icosahedral model levels.
+
+## Review fixes (external review at 0b5cecc, 2026-11-07)
+
+An independent read-only review found six confirmed defects; all fixed:
+
+1. **ERA5 hindsight averaging** — `wind.channels_for` averaged the issue
+   hour *with the hour at +60 min*, leaking reanalysis wind through the
+   forecast window. Now uses the issue hour only (`lead_min` accepted but
+   ignored). ICON-D2 forecast wind is archived (`icon_d2_sync`) but not
+   yet a model input.
+2. **Rollout channel order** — `rollout_eval` and `render _rollout`
+   concatenated flow *before* wind, so `u_idx=25` read upslope/divergence
+   as the motion field. The 0.643→0.143 rollout rejection was measured
+   with scrambled channels and must be re-run (open item).
+3. **`bias_calib.npz` had no producer** — `compute_bias_calib.py` now
+   writes it reproducibly from any checkpoint + index.
+4. **README front matter stale** — 0.5M U-Net / RW target replaced with
+   the actual 7.7M multi-lead YW setup; usage includes `--base-loss`,
+   `--exceedance`, `--flow-cache`.
+5. **Checkpoint selection mismatch** — selection now uses **pooled**
+   CSI@1.0 (the reported metric); pooled counts are always accumulated
+   (cheap), FSS stays behind `full_metrics`.
+6. **Derived wind-channel sign flips** — row 0 = north, so
+   `np.gradient(axis=0)` is −d/dnorth: the upslope `dh_dy` term and the
+   divergence `dv/dy` term were both flipped. Fixed and verified with
+   synthetic north/east ramps through the actual `WindSampler` class.
+   (Advection u/v signs themselves were already correct.)
+
+Also confirmed by the review: log1p targets, flow-sign fix (all four
+directions), inference clamp, FSS-vs-SciPy parity (7e-4 float32 noise).
+
+**Consequence:** every run before this fix used wrong upslope/divergence
+channels and hindsight wind averaging — absolute numbers for those runs
+are provisional until retrained.
 
 ## Data integrity: three reader bugs (fixed 2026-10-31)
 
@@ -692,6 +753,14 @@ production size**; revisit scaling only with a multi-season dataset.
       (`--exceedance 0.1,1,5 --base-loss 1.0`)
 - [x] ONNX export parity (item 7): 1.11e-06 max error, prob heads
       included — C++ inference unblocked
+- [x] External review fixes (2026-11-07, review at 0b5cecc):
+      wind upslope/divergence sign flips, ERA5 hindsight averaging
+      removed, rollout channel order, bias-calib script, pooled-CSI
+      checkpoint selection, README front matter — see "Review fixes"
+- [ ] Re-run rollout rejection with fixed channels (previous verdict
+      measured with scrambled flow/wind order)
+- [ ] ICON-D2 forecast wind as model input (archived; ERA5 reanalysis
+      is train/serve-mismatched at inference)
 - [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix

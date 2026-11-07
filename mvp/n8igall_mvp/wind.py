@@ -167,10 +167,15 @@ class WindSampler:
         self._build_weights()
 
         # Static derivatives for upslope/divergence channels.
+        # Row 0 = north, so np.gradient(axis=0) is d/drow = -d/dnorth:
+        # dh_dy must be negated to become d(elev)/d(north). (Was un-negated
+        # - review finding 6: the north-south upslope term was flipped.)
         g = classic_grid()
         if elevation is None:
             elevation = np.zeros((g.nrows, g.ncols), dtype=np.float32)
-        self.dh_dy, self.dh_dx = np.gradient(elevation.astype(np.float64), g.cell)
+        dh_dy_row, self.dh_dx = np.gradient(elevation.astype(np.float64),
+                                             g.cell)
+        self.dh_dy = -dh_dy_row
 
     def _build_weights(self) -> None:
         g = classic_grid()
@@ -201,27 +206,28 @@ class WindSampler:
         return out
 
     def channels_for(self, t: datetime, lead_min: int = 60) -> np.ndarray:
-        """Wind channels averaged over [t, t+lead_min], shape [6, H, W]."""
+        """Wind channels at hour ``t``, shape [6, H, W].
+
+        ``lead_min`` is accepted for call-site compatibility but ignored:
+        averaging over [t, t+lead] would leak reanalysis wind from inside
+        the forecast window (review finding 1 - hindsight through +60).
+        Only the issue hour is used; ICON-D2 forecast wind is the
+        train/serve-correct source and is archived by icon_d2_sync.
+        """
         t0 = np.datetime64(t.replace(minute=0, second=0, microsecond=0))
-        t1 = np.datetime64((t + timedelta(minutes=lead_min))
-                           .replace(minute=0, second=0, microsecond=0))
         i0 = int(np.searchsorted(self.times, t0))
-        i1 = int(np.searchsorted(self.times, t1))
         i0 = min(max(i0, 0), len(self.times) - 1)
-        i1 = min(max(i1, 0), len(self.times) - 1)
 
         u10, v10, u100, v100 = self._interp(i0)
-        if i1 != i0:
-            u10b, v10b, u100b, v100b = self._interp(i1)
-            u10, v10, u100, v100 = (u10 + u10b) / 2, (v10 + v10b) / 2, \
-                (u100 + u100b) / 2, (v100 + v100b) / 2
 
-        # Orographic upslope: w = -(u dh/dx + v dh/dy)
+        # Orographic upslope: w = -(u dh/dx_east + v dh/dy_north)
         upslope = -(u100 * self.dh_dx + v100 * self.dh_dy)
-        # Horizontal divergence on the RADOLAN grid (1 km spacing), scaled
-        # to "per 1000 m" so values stay O(1).
+        # Horizontal divergence: du/dx_east + dv/dy_north. Row 0 = north,
+        # so np.gradient(axis=0) is d/drow = -d/dnorth - the v term must be
+        # negated (review finding 6: the north-south term was flipped).
         g = classic_grid()
-        div = np.gradient(u10, g.cell, axis=1) + np.gradient(v10, g.cell, axis=0)
+        div = (np.gradient(u10, g.cell, axis=1)
+               - np.gradient(v10, g.cell, axis=0))
 
         return np.stack([
             u10, v10, u100, v100,

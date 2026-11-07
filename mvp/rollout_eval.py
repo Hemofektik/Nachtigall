@@ -91,11 +91,14 @@ def main() -> int:
             r5 = []
             for _ in range(len(leads)):
                 st = np.stack(hist)
-                st = np.concatenate([st, optical_flow(np.expm1(hist[-2]),
-                                                      np.expm1(hist[-1]))], axis=0)
-                # x = 19 radar + 6 wind + 2 flow + 4 static; append wind+static
-                # (skip the stale flow channels at x[25:27])
-                st = np.concatenate([st, x[19:25], x[27:]], axis=0)
+                # training order: radar(19) + wind(6) + flow(2) + static...
+                # (flow BEFORE wind put u_idx=25 on upslope/div - review
+                # finding 2; the rollout rejection was measured with
+                # scrambled channels)
+                st = np.concatenate(
+                    [st, x[19:25],
+                     optical_flow(np.expm1(hist[-2]), np.expm1(hist[-1])),
+                     x[27:]], axis=0)
                 o = m(torch.from_numpy(st)[None].to(dev))
                 pr = (o[0] if isinstance(out, tuple) else o)[0, 0]
                 pr = torch.log1p(torch.expm1(pr.clamp(min=0)) / args.rollout_bias)

@@ -250,22 +250,24 @@ def evaluate(model, loader, device, radar_channels: int,
                         csi_prob[(L, t)].append(
                             csi(p_rate, y_rate[:, i], mask[:, i], t))
 
-            # pooled counts + Brier (vectorized over batch and leads)
+            # pooled counts + Brier (cheap; always - selection uses pooled
+            # CSI, review finding 5). FSS box filters stay behind
+            # full_metrics (they dominate the pass time).
             pers = last_radar[:, None].expand(-1, n_leads, -1, -1)  # [B,L,H,W]
+            for who, fr in (("m", pred_rate), ("p", pers)):
+                for t in thresholds:
+                    o = (y_rate > t) & m
+                    f = (fr > t) & m
+                    for i in range(n_leads):
+                        ai = acc[(who, i, t)]
+                        oi, fi, mi = o[:, i], f[:, i], m[:, i]
+                        ai["hits"] += int((fi & oi).sum())
+                        ai["fa"] += int((fi & ~oi).sum())
+                        ai["miss"] += int((~fi & oi).sum())
+                        ai["n"] += int(mi.sum())
+                        ai["brier"] += float(
+                            ((fi.float() - oi.float()) ** 2 * mi.float()).sum())
             if full_metrics:
-                for who, fr in (("m", pred_rate), ("p", pers)):
-                    for t in thresholds:
-                        o = (y_rate > t) & m
-                        f = (fr > t) & m
-                        for i in range(n_leads):
-                            ai = acc[(who, i, t)]
-                            oi, fi, mi = o[:, i], f[:, i], m[:, i]
-                            ai["hits"] += int((fi & oi).sum())
-                            ai["fa"] += int((fi & ~oi).sum())
-                            ai["miss"] += int((~fi & oi).sum())
-                            ai["n"] += int(mi.sum())
-                            ai["brier"] += float(
-                                ((fi.float() - oi.float()) ** 2 * mi.float()).sum())
                 # FSS neighbourhood fractions (batched GPU box sums).
                 # Flatten batch x leads so each (thr, scale, who) is ONE
                 # box-filter call; obs fractions and mask denominators are
@@ -309,12 +311,11 @@ def evaluate(model, loader, device, radar_channels: int,
                 out[f"{key}_prob"] = float(np.nanmean(csi_prob[(L, t)]))
             for who, tag in (("m", ""), ("p", "_pers")):
                 st = acc[(who, i, t)]
-                if not full_metrics:
-                    continue
                 den = st["hits"] + st["fa"] + st["miss"]
                 out[f"{key}_pooled{tag}"] = (st["hits"] / den) if den else float("nan")
                 if st["n"]:
                     out[f"brier_lead{L}_{t}{tag}"] = st["brier"] / st["n"]
+                if full_metrics:
                     for s in FSS_SIZES:
                         d = st["fss_den"].get(s, 0.0)
                         out[f"fss_lead{L}_{t}_{s}{tag}"] = (
@@ -552,9 +553,12 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(json.dumps({"epoch": epoch, "train_loss":
                                  running / max(1, len(train_dl)), **val}) + "\n")
 
-        # Select on the cross-lead mean: single-lead keys can be 0.0 in
-        # every epoch (frozen best.pt) when the primary lead is unlearned.
-        lead_scores = [val[f"csi_lead{L}_1.0"] for L in (leads or [60])]
+        # Select on the cross-lead mean of POOLED CSI@1.0 - the metric
+        # actually reported (review finding 5: nanmean per-sample CSI was
+        # a different quantity than the headline pooled CSI).
+        lead_scores = [val.get(f"csi_lead{L}_1.0_pooled",
+                               val[f"csi_lead{L}_1.0"])
+                       for L in (leads or [60])]
         score = float(np.nanmean([s for s in lead_scores
                                   if not np.isnan(s)] or [np.nan]))
         if not np.isnan(score) and score > best:

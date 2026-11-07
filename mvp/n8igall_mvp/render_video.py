@@ -107,8 +107,14 @@ def _rollout(model, t: datetime, yw_root: Path, static: np.ndarray,
                 raw_now = np.expm1(hist[-1])
                 ff = (lk_flow(raw_prev, raw_now) if flow_estimator == "lk"
                       else optical_flow(raw_prev, raw_now))
-                x = np.concatenate([x, ff], axis=0)
-            x = np.concatenate([x, wind.channels_for(t), static], axis=0)
+                # training order: radar + wind + flow + static (+cloud);
+                # appending flow BEFORE wind made u_idx=25 read upslope/div
+                # (review finding 2 - rollout was measured with scrambled
+                # channels)
+                x = np.concatenate([x, wind.channels_for(t), ff, static],
+                                   axis=0)
+            else:
+                x = np.concatenate([x, wind.channels_for(t), static], axis=0)
             if cloud is not None:
                 x = np.concatenate([x, cloud.channels_for(t)], axis=0)
             out = model(torch.from_numpy(x)[None])
