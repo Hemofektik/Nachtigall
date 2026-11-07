@@ -161,9 +161,10 @@ def main(argv: list[str] | None = None) -> int:
                         "space: pred + a*(pred - gaussian_blur(pred, 1.0)); "
                         "0 = off (e.g. 0.6)")
     p.add_argument("--fps", type=int, default=2)
-    p.add_argument("--baseline", choices=["none", "flow"], default="none",
+    p.add_argument("--baseline", choices=["none", "flow", "lk"], default="none",
                    help="render a pure optical-flow advection forecast "
-                        "instead of the model (visual A/B)")
+                        "instead of the model: flow = dense Farneback, "
+                        "lk = pysteps Lucas-Kanade (best CSI)")
     p.add_argument("--rollout", action="store_true",
                    help="autoregressive +5min rollout: predict one step, "
                         "feed it back as the new now-frame, repeat (each "
@@ -207,15 +208,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # One issue time: model outputs for all discrete leads + input frame.
     x = assemble_input(yw_root, t, static, wind, cloud, flow=use_flow)
-    if args.baseline == "flow":
+    if args.baseline in ("flow", "lk"):
         from .baseline_pysteps import advect as _warp
-        from .dataset import optical_flow
         now = np.expm1(x[18])
-        flow = optical_flow(np.expm1(x[17]), now)
+        if args.baseline == "lk":
+            from pysteps.motion.lucaskanade import dense_lucaskanade
+            flow = dense_lucaskanade(np.stack([np.expm1(x[17]), now])
+                                     .astype(np.float64))
+            print("rendering PURE LK OPTICAL-FLOW baseline (no model)")
+        else:
+            from .dataset import optical_flow
+            flow = optical_flow(np.expm1(x[17]), now)
+            print("rendering PURE Farneback OPTICAL-FLOW baseline (no model)")
         pred_all = np.stack([
             np.log1p(np.clip(_warp(now, flow, L / 5.0), 0, None))
             for L in model_leads])
-        print("rendering PURE OPTICAL-FLOW baseline (no model)")
     elif args.rollout:
         pred_all = _rollout(model, t, yw_root, static, wind, cloud,
                             use_flow, max_steps=len(model_leads),

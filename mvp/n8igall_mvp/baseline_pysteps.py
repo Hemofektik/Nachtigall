@@ -93,6 +93,35 @@ def coarse_flow(prev: np.ndarray, curr: np.ndarray, block: int = 16,
     return out[:, :H, :W]
 
 
+def smooth_flow(prev: np.ndarray, curr: np.ndarray, sigma: float = 8.0,
+                angle_out: float = 60.0) -> np.ndarray:
+    """Gaussian-smoothed flow with per-pixel direction outlier rejection.
+
+    No tiles: every pixel gets a mean direction from its Gaussian
+    neighborhood. Individual pixels whose direction deviates more than
+    ``angle_out`` degrees from that local mean are outliers (convective
+    cells moving against the storm, textureless dry-area noise) and are
+    replaced by the local mean before the final smoothing pass, so they
+    cannot pollute their neighbours.
+
+    Returns [2,H,W] px/step (u=east, v=south).
+    """
+    from scipy.ndimage import gaussian_filter
+    dense = farneback_flow(prev, curr)
+    # pass 1: local mean direction per pixel
+    loc = gaussian_filter(dense, sigma=(0, sigma, sigma))
+    # per-pixel direction test against the local mean
+    dot = (dense * loc).sum(axis=0)
+    n1 = np.linalg.norm(dense, axis=0)
+    n2 = np.linalg.norm(loc, axis=0)
+    cos = dot / (n1 * n2 + 1e-9)
+    ang = np.degrees(np.arccos(np.clip(cos, -1, 1)))
+    outlier = (ang > angle_out) & (n1 > 0.1)   # moving pixels only
+    cleaned = np.where(outlier[None], loc, dense)
+    # pass 2: final neighborhood mean
+    return gaussian_filter(cleaned, sigma=(0, sigma, sigma)).astype(np.float32)
+
+
 def advect(frame: np.ndarray, flow: np.ndarray, steps: float) -> np.ndarray:
     """Warp ``frame`` [H,W] by ``flow`` [H,W,2] (px per frame-step) x ``steps``.
 
@@ -124,13 +153,17 @@ def main(argv: list[str] | None = None) -> int:
                    help="0 = all validation samples")
     p.add_argument("--stride", type=int, default=1,
                    help="take every Nth sample (for large test sets)")
-    p.add_argument("--flow-mode", choices=["lk", "farneback", "coarse"],
+    p.add_argument("--flow-mode", choices=["lk", "farneback", "coarse", "smooth"],
                    default="lk",
                    help="lk = pysteps Lucas-Kanade (dense); farneback = "
                         "dense Farneback; coarse = block-mean flow with "
-                        "outlier filtering (16px blocks)")
+                        "outlier filtering (16px blocks); smooth = "
+                        "Gaussian neighbourhood mean with per-pixel "
+                        "direction outlier rejection (no tiles)")
     p.add_argument("--block", type=int, default=16,
                    help="block size for --flow-mode coarse")
+    p.add_argument("--sigma", type=float, default=8.0,
+                   help="Gaussian sigma (px) for --flow-mode smooth")
     args = p.parse_args(argv)
 
     from pysteps.motion.lucaskanade import dense_lucaskanade
@@ -161,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.flow_mode == "coarse":
                 flow = coarse_flow(radar[-2], radar[-1], block=args.block)
+            elif args.flow_mode == "smooth":
+                flow = smooth_flow(radar[-2], radar[-1], sigma=args.sigma)
             elif args.flow_mode == "farneback":
                 flow = farneback_flow(radar[-2], radar[-1])
             else:
