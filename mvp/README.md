@@ -123,8 +123,16 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_lk/best.pt --out runs
 * **Sampling**: `--rain-bias N` upweights rainy samples
   (weight = 1 + N·rain_fraction) via `WeightedRandomSampler`.
 * **Next inputs** (per research doc §4.4): ICON-D2 forecast wind (archived
-  by `icon_d2_sync`, 7-day retention) to replace ERA5 reanalysis at
+  by `icon_d2_sync`) to replace ERA5 reanalysis at
   inference; 100 m steering-level wind needs icosahedral model levels.
+* **Archival policy** (2026-11-08): locally archived data is not
+  age-pruned. `icon_d2_sync` and the volume collector only delete the
+  oldest entries when free space drops below 40 GB (`min_free_gb`);
+  `--retention-days` (365) is a hard backstop. Raw radar (`yw`/`rt`/
+  `rv`) is never deleted by code. Redundant legacy RW extraction
+  (Jun 2023–Dec 2024, 22 GB, only reachable via superseded
+  `index_A`/`index_B`) was removed manually 2026-11-08; recent RW `.gz`
+  downloads are kept.
 
 ## Review fixes (external review at 0b5cecc, 2026-11-07)
 
@@ -767,7 +775,8 @@ production size**; revisit scaling only with a multi-season dataset.
 - [x] U-Net training with persistence baseline + CSI metrics
 - [x] ONNX export + parity check
 - [x] Hourly sync daemon (systemd user service): RADKLIM gap-fill, real-time
-      HDF5 mirror, 3D volume collection with retention + free-space guard
+      HDF5 mirror, 3D volume collection (space-guarded, see "Archival
+      policy")
 - [x] Spacing A/B test (3 seeds): 5-min beats 30-min (0.121±0.003 vs
       0.113±0.008 CSI@1.0, never loses, lower variance)
 - [x] Four data-integrity bugs fixed (three reader bugs + raw-vs-log1p
