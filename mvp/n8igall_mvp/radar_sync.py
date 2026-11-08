@@ -2,8 +2,11 @@
 
 Checks DWD opendata for new RADOLAN YW (5-min) and RW (hourly) frames for
 the trailing ``--window-days`` days, downloads whatever is missing, and
-collects 3D volume scans (which have no historical archive and must be
-grabbed while they are on the rolling server window).
+mirrors the real-time YW/RW HDF5, the operational nowcast (rv), and
+ICON-D2 forecast fields.
+
+3D volume-scan collection was removed 2026-11-08 (4.2 GB/day for data
+nothing consumes yet; revisit once the 2D pipeline hits its limits).
 
 Designed to run under systemd (see ``systemd/n8igall-radar-sync.service``):
 
@@ -16,7 +19,6 @@ Usage (single cycle):
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 import time
 import urllib.error
@@ -24,8 +26,6 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .collect_volumes import collect_once as collect_volumes_once
-from .collect_volumes import prune as prune_volumes
 from .download_radolan import download_rw, download_yw
 from .icon_d2_sync import sync as sync_icon_d2
 
@@ -33,10 +33,8 @@ _PKG_ROOT = Path(__file__).resolve().parent.parent
 # Data lives on the dedicated /data volume (477 GB ext4); mvp/data is a
 # symlink to /data/n8igall/data.
 DEFAULT_DEST = Path("/data/n8igall/data/raw")
-DEFAULT_VOLUMES = Path("/data/n8igall/data/volumes")
 DEFAULT_NWP = Path("/data/n8igall/data/nwp/icon_d2")
 WINDOW_DAYS = 14  # recent YW daily tars cover ~2 weeks; RW flat files 2025+
-MIN_FREE_GB = 25  # never let volume collection fill the system disk
 REALTIME = "https://opendata.dwd.de/weather/radar/radolan"
 # DWD's operational nowcast (RADVOR-derived): one tar per issue time with
 # 25 HDF5 forecasts at leads 0..120 min in 5-min steps. Realtime only (no
@@ -181,13 +179,9 @@ def sync(dest: Path, window_days: int) -> tuple[int, int]:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dest", type=Path, default=DEFAULT_DEST)
-    p.add_argument("--volumes", type=Path, default=DEFAULT_VOLUMES)
     p.add_argument("--nwp", type=Path, default=DEFAULT_NWP,
                    help="ICON-D2 wind archive destination")
     p.add_argument("--window-days", type=int, default=WINDOW_DAYS)
-    p.add_argument("--retention-days", type=int, default=365,
-                   help="hard age backstop only; prune() normally keeps "
-                        "everything until disk pressure (see prune())")
     p.add_argument("--once", action="store_true", help="single cycle then exit")
     args = p.parse_args(argv)
 
@@ -198,20 +192,9 @@ def main(argv: list[str] | None = None) -> int:
             rt = sync_realtime(args.dest)
             rv = sync_rv(args.dest)
             icon = sync_icon_d2(args.nwp)
-            vol = 0
-            pruned = prune_volumes(args.volumes, args.retention_days)
-            free_gb = shutil.disk_usage(args.volumes.parent).free / 1e9
-            if free_gb < MIN_FREE_GB:
-                print(f"{datetime.now():%Y-%m-%d %H:%M} WARN: only "
-                      f"{free_gb:.0f} GB free - skipping volume collection",
-                      file=sys.stderr, flush=True)
-            else:
-                vol = collect_volumes_once(args.volumes, args.retention_days)
             print(f"{datetime.now():%Y-%m-%d %H:%M} "
                   f"+{yw} YW, +{rw} RW, +{rt} real-time, +{rv} nowcast, "
-                  f"+{icon} icon-d2, "
-                  f"+{vol} volume files, "
-                  f"pruned {pruned} volumes ({time.time()-t0:.0f}s)", flush=True)
+                  f"+{icon} icon-d2 ({time.time()-t0:.0f}s)", flush=True)
         except Exception as e:  # noqa: BLE001 - a daemon must not die
             print(f"{datetime.now():%Y-%m-%d %H:%M} ERROR: {e}",
                   file=sys.stderr, flush=True)

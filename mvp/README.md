@@ -126,10 +126,12 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_lk/best.pt --out runs
   by `icon_d2_sync`) to replace ERA5 reanalysis at
   inference; 100 m steering-level wind needs icosahedral model levels.
 * **Archival policy** (2026-11-08): locally archived data is not
-  age-pruned. `icon_d2_sync` and the volume collector only delete the
-  oldest entries when free space drops below 40 GB (`min_free_gb`);
-  `--retention-days` (365) is a hard backstop. Raw radar (`yw`/`rt`/
-  `rv`) is never deleted by code. Redundant legacy RW extraction
+  age-pruned. `icon_d2_sync` only deletes the oldest entries when free
+  space drops below 40 GB (`min_free_gb`); `KEEP_DAYS` (365) is a hard
+  backstop. Raw radar (`yw`/`rt`/`rv`) is never deleted by code.
+  3D volume-scan collection was **removed** the same day (4.2 GB/day
+  for data no code consumes; revisit when the 2D pipeline hits its
+  limits) and its 41 GB store deleted. Redundant legacy RW extraction
   (Jun 2023–Dec 2024, 22 GB, only reachable via superseded
   `index_A`/`index_B`) was removed manually 2026-11-08; recent RW `.gz`
   downloads are kept.
@@ -775,8 +777,8 @@ production size**; revisit scaling only with a multi-season dataset.
 - [x] U-Net training with persistence baseline + CSI metrics
 - [x] ONNX export + parity check
 - [x] Hourly sync daemon (systemd user service): RADKLIM gap-fill, real-time
-      HDF5 mirror, 3D volume collection (space-guarded, see "Archival
-      policy")
+      HDF5 mirror, ICON-D2 archive (3D volume collection removed
+      2026-11-08 — see "Archival policy")
 - [x] Spacing A/B test (3 seeds): 5-min beats 30-min (0.121±0.003 vs
       0.113±0.008 CSI@1.0, never loses, lower variance)
 - [x] Four data-integrity bugs fixed (three reader bugs + raw-vs-log1p
@@ -810,4 +812,5 @@ production size**; revisit scaling only with a multi-season dataset.
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
-- [ ] 3D volume-scan input channels (collector is accumulating data)
+- [ ] 3D volume-scan input channels (collector removed 2026-11-08 —
+      4.2 GB/day for unused data; re-add when the 2D pipeline plateaus)

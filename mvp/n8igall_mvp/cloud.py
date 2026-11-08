@@ -1,8 +1,9 @@
 """ERA5 cloud-layer channels (low/mid/high cloud fraction).
 
 Vertical context for the nowcaster: cloud depth and high-cloud fraction
-are coarse proxies for convective depth (true echo-top heights need the
-prospective 3D volume collection, which has no historical archive).
+are coarse proxies for convective depth (true echo-top heights would
+need 3D volume scans — collection removed 2026-11-08, revisit if the
+2D pipeline plateaus).
 
 Same coarse-grid + monthly-chunk design as wind.py (open-meteo archive
 API, resumable, hourly-quota aware).

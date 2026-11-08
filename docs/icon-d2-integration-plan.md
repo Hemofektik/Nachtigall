@@ -121,8 +121,11 @@ between steps of that run) is allowed. What must still match is the
    *before* the issue time — no hindsight. (ERA5 issue-hour wind remains
    reanalysis; review 1 flagged this as a train/serve mismatch that only
    ICON-D2 wind can close.)
-5. **Disk**: 90-day retention ≈ 63 GB of the 236 GB free on `/data`;
-   `radar_sync` already guards volume collection at <25 GB free.
+5. **Disk**: full-rate ≈ 226 GB/year for all four variables (measured
+   0.62 GB/day); `icon_d2_sync` keeps everything until free space drops
+   below 40 GB, then prunes oldest-first (365-day hard backstop).
+   (Volume collection was removed 2026-11-08 — it dominated disk
+   growth at 4.2 GB/day.)
 
 ## Open questions for review
 
