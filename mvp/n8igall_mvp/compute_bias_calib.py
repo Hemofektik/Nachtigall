@@ -6,11 +6,13 @@ no script produced - this writes it reproducibly:
     bias[L]   = mean(pred_rate) / mean(obs_rate) over valid pixels
     factor[L] = 1 / bias[L]   (render divides predictions by bias)
 
-Usage:
+Usage (fit on the TRAIN split - never on the test index, or the
+calibrated test number stops being honest):
     python -m n8igall_mvp.compute_bias_calib \
-        --checkpoint runs/multi_prob2/best.pt \
-        --index data/index_test_rt.json --flow --flow-cache data/index_test_rt_flow \
-        --out runs/multi_prob2/bias_calib.npz
+        --checkpoint runs/multi_lk/best.pt \
+        --index data/index_multi.json --stride 40 --max-samples 120 \
+        --flow --flow-cache data/index_multi_flow --flow-estimator lk \
+        --rt-dir data/raw/yw --out runs/multi_lk/bias_calib.npz
 """
 from __future__ import annotations
 

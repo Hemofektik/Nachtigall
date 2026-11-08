@@ -133,22 +133,48 @@ def _site_id(site: str) -> str:
     return ids[site]
 
 
-def prune(root: Path, retention_days: int) -> int:
-    """Delete volume directories older than the retention window."""
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) \
-        - timedelta(days=retention_days)
-    removed = 0
-    for site_dir in root.glob("*"):
-        if not site_dir.is_dir():
-            continue
-        for vol_dir in site_dir.glob("*"):
-            try:
-                t = datetime.strptime(vol_dir.name, "%Y%m%d%H%M%S%f")
-            except ValueError:
+def prune(root: Path, retention_days: int,
+          min_free_gb: float = 40.0) -> int:
+    """Delete volume dirs only under disk pressure, oldest first.
+
+    Archiving policy (user directive 2026-11-08): do NOT delete archived
+    data by age. ``retention_days`` is only a hard backstop; normally
+    everything is kept until the filesystem drops below ``min_free_gb``,
+    then the oldest volume dirs are removed first. Volumes come from a
+    ~40-day rolling server window, so anything dropped is gone for good.
+    """
+    free_gb = shutil.disk_usage(root).free / 1e9 if root.exists() \
+        else min_free_gb + 1
+
+    def _vol_dirs() -> list[tuple[datetime, Path]]:
+        out = []
+        for site_dir in root.glob("*"):
+            if not site_dir.is_dir():
                 continue
-            if t < cutoff:
-                shutil.rmtree(vol_dir, ignore_errors=True)
-                removed += 1
+            for vol_dir in site_dir.glob("*"):
+                try:
+                    t = datetime.strptime(vol_dir.name, "%Y%m%d%H%M%S%f")
+                except ValueError:
+                    continue
+                out.append((t, vol_dir))
+        return sorted(out)
+
+    removed = 0
+    if free_gb < min_free_gb:
+        for _t, vol_dir in _vol_dirs():        # oldest first
+            if free_gb >= min_free_gb:
+                break
+            shutil.rmtree(vol_dir, ignore_errors=True)
+            removed += 1
+            free_gb = shutil.disk_usage(root).free / 1e9
+    else:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) \
+            - timedelta(days=retention_days)   # hard backstop only
+        for t, vol_dir in _vol_dirs():
+            if t >= cutoff:
+                break
+            shutil.rmtree(vol_dir, ignore_errors=True)
+            removed += 1
     return removed
 
 

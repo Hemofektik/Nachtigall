@@ -185,7 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--nwp", type=Path, default=DEFAULT_NWP,
                    help="ICON-D2 wind archive destination")
     p.add_argument("--window-days", type=int, default=WINDOW_DAYS)
-    p.add_argument("--retention-days", type=int, default=10)
+    p.add_argument("--retention-days", type=int, default=365,
+                   help="hard age backstop only; prune() normally keeps "
+                        "everything until disk pressure (see prune())")
     p.add_argument("--once", action="store_true", help="single cycle then exit")
     args = p.parse_args(argv)
 

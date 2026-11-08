@@ -17,11 +17,13 @@ must grab new files promptly. We archive:
   resolution: HRRR is CONUS-only, GFS is 25 km) and **dbz_cmax**
   (synthetic composite max-echo reflectivity - same observation space
   as our radar input, directly comparable pixel-for-pixel; ~3.6 MB/file
-  so it dominates the ~700 MB/day total, ~5 GB at 7-day retention).
+  so it dominates the ~700 MB/day total).
   ICON-D2 runs 8x daily (every 3 h), so all fields arrive 8x per day.
 * forecast steps 000..12 hourly (~13 steps; enough for the +60 min
   nowcast window with margin).
-* retention: ``KEEP_DAYS`` days per file (default 7).
+* retention: keep everything by default. Pruning only happens when the
+  filesystem drops below ``min_free_gb`` (oldest init dirs first), with
+  ``KEEP_DAYS`` as a hard age backstop. See ``sync()``.
 
 No historical archive exists, so tot_prec cannot be a training input
 yet - archiving starts the clock; it becomes usable as an NWP input
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -49,7 +52,11 @@ BASE = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 CYCLES = ("00", "03", "06", "09", "12", "15", "18", "21")
 VARS = ("u_10m", "v_10m", "tot_prec", "dbz_cmax")
 MAX_STEP = 12          # forecast hours archived per run
-KEEP_DAYS = 7
+KEEP_DAYS = 365        # hard backstop only; normal pruning is space-guarded
+                       # (see sync(): keeps everything until <40 GB free)
+                       # ~29 days (1,400 half-hour issues) to ~90 days
+                       # (4,300). Pruned cycles cannot be refetched -
+                       # opendata only keeps the latest run per cycle.
 DEFAULT_DEST = Path("/data/n8igall/data/nwp/icon_d2")
 _NAME_RE = re.compile(
     r"icon-d2_germany_regular-lat-lon_single-level_(\d{10})_(\d{3})_2d_"
@@ -66,8 +73,16 @@ def _index(url: str) -> list[str]:
 
 
 def sync(dest: Path = DEFAULT_DEST, max_step: int = MAX_STEP,
-         keep_days: int = KEEP_DAYS, now: datetime | None = None) -> int:
-    """Download missing ICON-D2 u/v 10m fields; prune old init dirs."""
+         keep_days: int = KEEP_DAYS, now: datetime | None = None,
+         min_free_gb: float = 40.0) -> int:
+    """Download missing ICON-D2 fields; prune only when disk runs low.
+
+    Archiving policy (user directive 2026-11-08): do NOT delete archived
+    data by age. ``keep_days`` is only a hard backstop; the normal path
+    keeps everything until the filesystem drops below ``min_free_gb``,
+    then removes the OLDEST init dirs first. (opendata itself only keeps
+    the latest run per cycle, so anything we drop is gone for good.)
+    """
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     dest.mkdir(parents=True, exist_ok=True)
     stored = 0
@@ -102,16 +117,33 @@ def sync(dest: Path = DEFAULT_DEST, max_step: int = MAX_STEP,
                     stored += 1
                 except (urllib.error.HTTPError, urllib.error.URLError, OSError):
                     target.unlink(missing_ok=True)
-    # prune: drop init dirs older than keep_days
-    cutoff = now - timedelta(days=keep_days)
-    for d in dest.iterdir():
-        if not d.is_dir():
-            continue
-        try:
-            t = datetime.strptime(d.name, "%Y%m%d%H")
-        except ValueError:
-            continue
-        if t < cutoff:
+
+    # Prune: age-based only as a hard backstop (keep_days); normally only
+    # when free space drops below min_free_gb, oldest init dirs first.
+    def _init_dirs() -> list[Path]:
+        out = []
+        for d in dest.iterdir():
+            if d.is_dir():
+                try:
+                    out.append((datetime.strptime(d.name, "%Y%m%d%H"), d))
+                except ValueError:
+                    pass
+        return sorted(out)
+
+    free_gb = shutil.disk_usage(dest).free / 1e9
+    if free_gb < min_free_gb:
+        for t, d in _init_dirs():          # oldest first
+            if free_gb >= min_free_gb:
+                break
+            for f in d.glob("*"):
+                f.unlink(missing_ok=True)
+            d.rmdir()
+            free_gb = shutil.disk_usage(dest).free / 1e9
+    else:
+        cutoff = now - timedelta(days=keep_days)   # hard backstop only
+        for t, d in _init_dirs():
+            if t >= cutoff:
+                break
             for f in d.glob("*"):
                 f.unlink(missing_ok=True)
             d.rmdir()
