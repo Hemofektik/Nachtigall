@@ -135,6 +135,14 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_lk/best.pt --out runs
   (Jun 2023–Dec 2024, 22 GB, only reachable via superseded
   `index_A`/`index_B`) was removed manually 2026-11-08; recent RW `.gz`
   downloads are kept.
+* **Budget trims** (2026-11-08, measured rates): ICON-D2 keeps steps
+  000–004 only (270 MB/day instead of 620); `rv` nowcasts are archived
+  at exact-hour issue times only (24/day instead of 288 — 12 GB/year
+  instead of 141; existing 5-min tars stay); YW stays full rate
+  (163 GB/year). LK flow caches live on the root disk at
+  `/home/rsc/nachtigall-cache/` with symlinks from
+  `data/index_*_flow.{f16,json}` — regenerable in ~37 min, paths
+  unchanged.
 
 ## Review fixes (external review at 0b5cecc, 2026-11-07)
 
@@ -509,7 +517,9 @@ coherent): implemented in `baseline_pysteps.py`:
   textureless patches. Test-set evaluations in progress.
 
 **ICON-D2 archiving (item 6 started, 2026-11-07):** `icon_d2_sync.py`
-mirrors u/v 10 m (regular-lat-lon, forecast steps 0–12 h) for all 8
+mirrors u/v 10 m, `tot_prec`, `dbz_cmax` (regular-lat-lon, forecast
+steps 0–4 h — runs renew every 3 h, so 3 h age + 60 min lead covers the
+nowcast window; steps beyond 4 h are never read) for all 8
 3-hourly cycles into `/data/n8igall/data/nwp/icon_d2/<init>/` — DWD
 retains only the latest run per cycle (~24 h), so the hourly daemon
 now collects it. No single-level 100 m wind exists (only icosahedral

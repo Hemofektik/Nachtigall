@@ -93,6 +93,12 @@ def sync_rv(dest: Path, window_hours: int = RV_WINDOW_HOURS) -> int:
 
     Each ``composite_rv_YYYYMMDD_HHMM.tar`` holds 25 HDF5 forecasts
     (leads 0..120 min, 5-min steps) on the 1200x1100 stereographic grid.
+
+    Only exact-hour issue times are kept (24/day instead of 288; user
+    directive 2026-11-08): the baseline is scored on hourly cadence and
+    the 5-min stream alone would cost 141 GB/year. The rolling window
+    means a skipped issue time cannot be refetched, so the filter must
+    run before the download, not on existing files.
     """
     import re
     rv_dir = dest / "rv"
@@ -111,7 +117,7 @@ def sync_rv(dest: Path, window_hours: int = RV_WINDOW_HOURS) -> int:
             t = datetime.strptime(name[13:21] + name[22:26], "%Y%m%d%H%M")
         except ValueError:
             continue
-        if t < cutoff:
+        if t < cutoff or t.minute != 0:
             continue
         target = rv_dir / name
         if target.exists():

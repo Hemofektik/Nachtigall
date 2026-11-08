@@ -31,11 +31,13 @@ daemon:
 | `dbz_cmax` | synthetic composite max-echo (dBZ) | ~3.6 MB | future input in *radar observation space* — directly comparable pixel-for-pixel with our radar channels |
 
 * Delivery: ICON-D2 runs **8× daily** (cycles 00/03/06/09/12/15/18/21
-  UTC), 49 forecast steps per cycle; we archive steps **000–12 hourly**
-  (covers the +60 min nowcast window with margin).
-* Retention: **90 days** per init time (`KEEP_DAYS`, raised from 7 on
-  2026-11-08 before any prune ran — see the retention note below),
-  ~700 MB/day, ~63 GB total on `/data/n8igall/data/nwp/icon_d2/<init>/`.
+  UTC), 49 forecast steps per cycle; we archive steps **000–04 hourly**
+  (runs renew every 3 h, so 3 h age + 60 min lead covers the +60 min
+  nowcast window; steps >4 h never read — user directive 2026-11-08).
+* Retention: **space-guarded** (`KEEP_DAYS` 365 is a hard backstop;
+  normally everything is kept until free space < 40 GB, then oldest
+  init dirs go first), ~270 MB/day at 5 steps, ~100 GB/year on
+  `/data/n8igall/data/nwp/icon_d2/<init>/`.
 * **No historical archive exists** on opendata (only the latest run per
   cycle, ~24 h) — collecting from now is the only route; this is why
   archiving started immediately.

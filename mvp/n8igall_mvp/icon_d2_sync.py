@@ -17,10 +17,11 @@ must grab new files promptly. We archive:
   resolution: HRRR is CONUS-only, GFS is 25 km) and **dbz_cmax**
   (synthetic composite max-echo reflectivity - same observation space
   as our radar input, directly comparable pixel-for-pixel; ~3.6 MB/file
-  so it dominates the ~700 MB/day total).
+  so it dominates the total, ~270 MB/day at 5 steps).
   ICON-D2 runs 8x daily (every 3 h), so all fields arrive 8x per day.
-* forecast steps 000..12 hourly (~13 steps; enough for the +60 min
-  nowcast window with margin).
+* forecast steps 000..04 hourly (5 steps; runs renew every 3 h, so
+  3 h age + 60 min lead covers the whole nowcast window - see
+  ``MAX_STEP``).
 * retention: keep everything by default. Pruning only happens when the
   filesystem drops below ``min_free_gb`` (oldest init dirs first), with
   ``KEEP_DAYS`` as a hard age backstop. See ``sync()``.
@@ -51,11 +52,13 @@ from pathlib import Path
 BASE = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 CYCLES = ("00", "03", "06", "09", "12", "15", "18", "21")
 VARS = ("u_10m", "v_10m", "tot_prec", "dbz_cmax")
-MAX_STEP = 12          # forecast hours archived per run
+MAX_STEP = 4           # forecast hours archived per run: runs renew every
+                       # 3 h, so the oldest field a +60 min nowcast can
+                       # draw is 3 h old + 60 min lead = step 004; anything
+                       # beyond 4 h is never read (user directive 2026-11-08)
 KEEP_DAYS = 365        # hard backstop only; normal pruning is space-guarded
-                       # (see sync(): keeps everything until <40 GB free)
-                       # ~29 days (1,400 half-hour issues) to ~90 days
-                       # (4,300). Pruned cycles cannot be refetched -
+                       # (see sync(): keeps everything until <40 GB free).
+                       # Pruned cycles cannot be refetched -
                        # opendata only keeps the latest run per cycle.
 DEFAULT_DEST = Path("/data/n8igall/data/nwp/icon_d2")
 _NAME_RE = re.compile(
