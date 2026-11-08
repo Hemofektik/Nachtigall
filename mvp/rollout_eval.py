@@ -21,7 +21,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, ".")
-from n8igall_mvp.dataset import Sample, _yw_path, load_sample, optical_flow
+from n8igall_mvp.dataset import (Sample, _yw_path, lk_flow, load_sample,
+                                 optical_flow)
 from n8igall_mvp.model import UNet, csi
 from n8igall_mvp.radolan import read_frame
 from n8igall_mvp.wind import WindSampler
@@ -31,10 +32,12 @@ THRS = (0.1, 1.0, 5.0)
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--checkpoint", type=Path, default=Path("runs/multi_prob2/best.pt"))
+    p.add_argument("--checkpoint", type=Path, default=Path("runs/multi_lk/best.pt"))
     p.add_argument("--index", type=Path, required=True)
     p.add_argument("--stride", type=int, default=8)
-    p.add_argument("--rollout-bias", type=float, default=1.19)
+    p.add_argument("--rollout-bias", type=float, default=None,
+                   help="per-step debias factor; default: 1/factor[+5] "
+                        "from <ckpt_dir>/bias_calib.npz if present, else 1.0")
     p.add_argument("--static", type=Path, default=Path("data/static/channels.npz"))
     p.add_argument("--wind", type=Path, default=Path("data/wind/era5_wind.npz"))
     p.add_argument("--out", type=Path, default=None)
@@ -49,6 +52,17 @@ def main() -> int:
              exceedance=ck.get("exceedance"))
     m.load_state_dict(ck["model"])
     m.to(dev).eval()
+    flow_est = ck.get("flow_estimator", "farneback")
+    bias = args.rollout_bias
+    if bias is None:
+        bpath = args.checkpoint.parent / "bias_calib.npz"
+        if bpath.exists():
+            b = np.load(bpath)
+            f5 = float(b["factors"][list(b["leads"]).index(5)])
+            bias = 1.0 / f5 if f5 else 1.0
+        else:
+            bias = 1.0
+    print(f"flow_estimator={flow_est} rollout_bias={bias:.3f}", flush=True)
 
     samples = [Sample(**s) for s in json.loads(args.index.read_text())][::args.stride]
     static = np.load(args.static)
@@ -73,9 +87,11 @@ def main() -> int:
             a["n"] += int(msk.sum())
 
     t0 = time.time()
+    _flow = lk_flow if flow_est == "lk" else optical_flow
     with torch.no_grad():
         for bi, s in enumerate(samples):
-            x, y, mask = load_sample(s, wind_sampler=wind, leads=leads, flow=True)
+            x, y, mask = load_sample(s, wind_sampler=wind, leads=leads,
+                                     flow=True, flow_estimator=flow_est)
             x = np.concatenate([x, static_c], axis=0)
             xb = torch.from_numpy(x)[None].to(dev)
             # direct
@@ -97,11 +113,11 @@ def main() -> int:
                 # scrambled channels)
                 st = np.concatenate(
                     [st, x[19:25],
-                     optical_flow(np.expm1(hist[-2]), np.expm1(hist[-1])),
+                     _flow(np.expm1(hist[-2]), np.expm1(hist[-1])),
                      x[27:]], axis=0)
                 o = m(torch.from_numpy(st)[None].to(dev))
                 pr = (o[0] if isinstance(out, tuple) else o)[0, 0]
-                pr = torch.log1p(torch.expm1(pr.clamp(min=0)) / args.rollout_bias)
+                pr = torch.log1p(torch.expm1(pr.clamp(min=0)) / bias)
                 r5.append(pr.cpu().numpy())
                 hist = hist[1:] + [pr.cpu().numpy()]
             rollout = np.stack(r5)
