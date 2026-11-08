@@ -405,6 +405,38 @@ peaks ~1.56 at +20), light rain still fades at +60.
 `runs/multi_prob2/model.onnx` (30.9 MB). The last unchecked box on
 the original list — C++ inference via ONNX Runtime is now unblocked.
 
+### Final model: `multi_lk` (2026-11-08) — first run with fully correct inputs
+
+Trained after the external-review fixes (wind sign flips, issue-hour-only
+wind, pooled-CSI selection) with **pysteps LK flow channels** from the
+precomputed cache. Step 7 (uncalibrated test eval, 2,824 samples):
+
+**Pooled CSI @ 1.0:**
+
+| Lead | multi_lk | prob2 | LK baseline | persistence |
+|---|---|---|---|---|
+| +5 | **0.729** | 0.705 | 0.722 | 0.605 |
+| +10 | **0.640** | 0.611 | 0.620 | 0.505 |
+| +15 | **0.590** | 0.565 | 0.561 | 0.457 |
+| +20 | **0.549** | 0.540 | 0.516 | 0.423 |
+| +30 | 0.492 | 0.494 | 0.456 | 0.380 |
+| +60 | 0.336 | 0.345 | 0.344 | 0.293 |
+
+**Pooled CSI @ 5.0:** multi_lk best at +15/+30/+60 (0.236/0.166/0.081);
+LK only edges it at +5 (0.404 vs 0.396).
+
+* **The +5/+10 gap to plain optical flow is closed and reversed** —
+  LK flow channels did their job; multi_lk beats LK at 7 of 8 leads
+  (loses only +60 by 0.008).
+* FSS@50 ≥ LK at every lead; Brier better than prob2 at +5/+15.
+* Caveat: prob2/multi_flow's slightly higher +30/+60 came from runs
+  with the wind-sign bug — multi_lk is the first fully-correct-inputs
+  run, so its numbers are the trustworthy ones.
+* Step 8 bias calibration fitted on the **train** split (120 samples):
+  +15% @+5, peak +34% @+20, −6% @+60 → `runs/multi_lk/bias_calib.npz`.
+* Video: `output/pred_vs_actual_multilk_20240926.mp4` (with
+  `--bias-calib`).
+
 ### Test-set results after the sign fix (`multi_prob2`, 2026-11-05)
 
 Untouched test set (2,824 real-time samples), pooled CSI:
