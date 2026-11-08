@@ -476,7 +476,7 @@ rendered video against the pure-flow baseline:
 
 | Experiment | Verdict | Evidence |
 |---|---|---|
-| Autoregressive +5 min rollout | **rejected** | even debiased (×1/1.19 per step) it collapses 0.643→0.143 @+60: spatial errors compound faster than bias repair (`rollout_test.json`) |
+| Autoregressive +5 min rollout | **rejected (retested fairly)** | the original rejection used scrambled channels (review finding 2); the corrected retest (LK flow, train-split debias 1.146, fixed order) matches direct at +5/+10 (0.753 vs 0.747 @+5) but still collapses from +25 (0.454 → 0.109 @+60 vs direct 0.321): spatial errors compound faster than per-step debias can repair. Direct single-pass confirmed (`runs/multi_lk/rollout_test.json`) |
 | Per-lead bias calibration | **kept** (`--bias-calib`) | measured test-set bias +19%@5 … −16%@60; reciprocal factors applied in rate space, no retrain |
 | Unsharp mask (`--sharpen`) | **rejected by user** | halo artifacts; flag kept but unused |
 | Gradient texture loss (`--grad-weight 0.2`, `multi_prob3`) | **rejected** | regressed every test metric: CSI@1.0 @+60 0.266 vs prob2's 0.345 (below persistence!), FSS 0.803→0.698; bias also worsened (+43%@5) |
