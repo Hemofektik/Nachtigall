@@ -11,10 +11,19 @@ must grab new files promptly. We archive:
 
 * variables: u_10m, v_10m (regular-lat-lon grid - the icosahedral
   native grid is skipped; there is no single-level 100 m wind, so the
-  steering-level channel question is deferred),
+  steering-level channel question is deferred) and **tot_prec** (ICON-D2
+  total precipitation at 2.2 km - the highest-resolution precipitation
+  forecast for this region; no US product covers Germany at useful
+  resolution: HRRR is CONUS-only, GFS is 25 km). ICON-D2 runs 8x daily
+  (every 3 h), so tot_prec arrives 8x per day.
 * forecast steps 000..12 hourly (~13 steps; enough for the +60 min
-  nowcast window with margin, ~26 MB/cycle, ~210 MB/day),
-* retention: ``KEEP_DAYS`` days per file (default 7, ~1.5 GB).
+  nowcast window with margin, ~35 MB/cycle, ~280 MB/day).
+* retention: ``KEEP_DAYS`` days per file (default 7, ~2 GB).
+
+No historical archive exists, so tot_prec cannot be a training input
+yet - archiving starts the clock; it becomes usable as an NWP input
+(and as a scored baseline on real-time data) once enough history
+accumulates.
 
 Layout: ``<dest>/<YYYYMMDDHH>/<var>_<step>.grib2.bz2`` where the
 directory is the cycle init time.
@@ -35,7 +44,7 @@ from pathlib import Path
 
 BASE = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 CYCLES = ("00", "03", "06", "09", "12", "15", "18", "21")
-VARS = ("u_10m", "v_10m")
+VARS = ("u_10m", "v_10m", "tot_prec")
 MAX_STEP = 12          # forecast hours archived per run
 KEEP_DAYS = 7
 DEFAULT_DEST = Path("/data/n8igall/data/nwp/icon_d2")
