@@ -14,14 +14,20 @@ must grab new files promptly. We archive:
   steering-level channel question is deferred), **tot_prec** (ICON-D2
   total precipitation at 2.2 km - the highest-resolution precipitation
   forecast for this region; no US product covers Germany at useful
-  resolution: HRRR is CONUS-only, GFS is 25 km) and **dbz_cmax**
-  (synthetic composite max-echo reflectivity - same observation space
-  as our radar input, directly comparable pixel-for-pixel; ~3.6 MB/file
-  so it dominates the total, ~270 MB/day at 5 steps).
-  ICON-D2 runs 8x daily (every 3 h), so all fields arrive 8x per day.
-* forecast steps 000..04 hourly (5 steps; runs renew every 3 h, so
-  3 h age + 60 min lead covers the whole nowcast window - see
-  ``MAX_STEP``).
+  resolution: HRRR is CONUS-only, GFS is 25 km), **dbz_cmax**
+  (synthetic *column-max* dBZ - reflectivity domain like our radar,
+  but a column maximum rather than a near-surface value, so not
+  pixel-identical to YW; ~3.6 MB/file) and **clcl, clcm, clch**
+  (low/mid/high cloud fraction - the operational twin of the ERA5
+  cloud channels `multi_lk_cloud` trained on, ~1.1 MB/file each).
+  ICON-D2 runs 8x daily (every 3 h); ~640 MB/day at 8 steps (≈234
+  GB/yr).
+* forecast steps 000..07 hourly (8 steps). tot_prec is an hourly
+  *accumulation from model start*, so the window covering a lead is a
+  difference of consecutive steps - the window END must be archived.
+  A late run also forces a one-cycle fallback (observed publication:
+  step 000 listed +44 min after init), which costs 3 more steps; see
+  ``MAX_STEP``.
 * retention: keep everything by default. Pruning only happens when the
   filesystem drops below ``min_free_gb`` (oldest init dirs first), with
   ``KEEP_DAYS`` as a hard age backstop. See ``sync()``.
@@ -51,11 +57,19 @@ from pathlib import Path
 
 BASE = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 CYCLES = ("00", "03", "06", "09", "12", "15", "18", "21")
-VARS = ("u_10m", "v_10m", "tot_prec", "dbz_cmax")
-MAX_STEP = 4           # forecast hours archived per run: runs renew every
-                       # 3 h, so the oldest field a +60 min nowcast can
-                       # draw is 3 h old + 60 min lead = step 004; anything
-                       # beyond 4 h is never read (user directive 2026-11-08)
+VARS = ("u_10m", "v_10m", "tot_prec", "dbz_cmax", "clcl", "clcm", "clch")
+MAX_STEP = 7           # forecast hours archived per run (review at
+                       # 13a87fb: step 4 is one hour short). tot_prec is
+                       # an accumulation from model start, so the hour
+                       # containing a +60 min lead is a difference of
+                       # consecutive steps and the window END must be
+                       # stored: issue 15:50 with a late 15 UTC run
+                       # falls back to the 12 UTC run, whose 16:00-17:00
+                       # window is step 5 - step 4. Observed publication
+                       # delay is +44 min to step 000, so the freshest
+                       # run may lack the needed steps at issue time.
+                       # 0..7 covers the one-cycle-late case with margin
+                       # (two cycles late would be step 8; optional).
 KEEP_DAYS = 365        # hard backstop only; normal pruning is space-guarded
                        # (see sync(): keeps everything until <40 GB free).
                        # Pruned cycles cannot be refetched -

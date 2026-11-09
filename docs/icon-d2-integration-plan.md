@@ -28,26 +28,37 @@ daemon:
 |---|---|---|---|
 | `u_10m`, `v_10m` | 10 m wind (regular-lat-lon) | ~1 MB | future train/serve wind parity (replaces ERA5 reanalysis at inference) |
 | `tot_prec` | total precipitation, 2.2 km | ~0.9 MB | future NWP-precip input + scoreable baseline |
-| `dbz_cmax` | synthetic composite max-echo (dBZ) | ~3.6 MB | future input in *radar observation space* — directly comparable pixel-for-pixel with our radar channels |
+| `dbz_cmax` | synthetic *column-max* dBZ | ~3.6 MB | future input in the reflectivity domain — same units family as radar, but a column maximum, **not** pixel-identical to near-surface YW |
+| `clcl`, `clcm`, `clch` | low / mid / high cloud fraction (instantaneous) | ~1.1 MB | operational twin of the ERA5 cloud channels `multi_lk_cloud` trained on (ERA5 is reanalysis — unserveable at issue time) |
 
 * Delivery: ICON-D2 runs **8× daily** (cycles 00/03/06/09/12/15/18/21
-  UTC), 49 forecast steps per cycle; we archive steps **000–04 hourly**
-  (runs renew every 3 h, so 3 h age + 60 min lead covers the +60 min
-  nowcast window; steps >4 h never read — user directive 2026-11-08).
+  UTC), 49 forecast steps per cycle; we archive steps **000–07 hourly**
+  (8 steps). Reason: `tot_prec` is an accumulation from model start, so
+  the window covering a lead is a difference of consecutive steps and
+  the window **end** must be stored — issue 15:50 with a late 15 UTC
+  run falls back to the 12 UTC run, whose 16:00–17:00 window is
+  step 5 − step 4; publication delay (+44 min observed to step 000)
+  makes that fallback real. 0–7 covers the one-cycle-late case with
+  margin (review at 13a87fb).
 * Retention: **space-guarded** (`KEEP_DAYS` 365 is a hard backstop;
   normally everything is kept until free space < 40 GB, then oldest
-  init dirs go first), ~270 MB/day at 5 steps, ~100 GB/year on
-  `/data/n8igall/data/nwp/icon_d2/<init>/`.
+  init dirs go first), ~640 MB/day at 7 vars × 8 steps, ~234 GB/year
+  on `/data/n8igall/data/nwp/icon_d2/<init>/`.
 * **No historical archive exists** on opendata (only the latest run per
   cycle, ~24 h) — collecting from now is the only route; this is why
   archiving started immediately.
 
 ## Timeline and decision gates
 
-**Archive status (2026-11-09):** first init 2026-11-06 18Z; 24 cycles /
-559 MB so far, steps **000–004 only** (`MAX_STEP=4` since 2026-11-08 —
-steps 5–12 are never read: runs renew every 3 h, so 3 h age + 60 min
-lead is the oldest field a nowcast can draw; ~270 MB/day ≈ 100 GB/yr).
+**Archive status (2026-11-09, review at 13a87fb):** first init
+2026-11-06 18Z; 24 cycles / 559 MB so far at steps 000–004. The review
+found step 4 one hour short (tot_prec is an accumulation from model
+start, so the hour containing a +60 min lead is *step 5 − step 4* of a
+3-hour-old fallback run, and publication delay is +44 min to step 000)
+— `MAX_STEP` is now **7** and the low/mid/high cloud fractions
+**clcl/clcm/clch** are archived too (operational twin of the ERA5
+cloud channels; no historical archive exists, so they start accumulating
+from now). ~640 MB/day ≈ 234 GB/yr.
 
 **Retention note (review at ba2279c):** the original 7-day `KEEP_DAYS`
 would have pruned cycles before the gates below could be met — 7 days ×
@@ -114,8 +125,10 @@ between steps of that run) is allowed. What must still match is the
   accumulated field as if it were a 5-minute rate.
 * **Clip or mask the ICON domain edge** — the German radar grid is not
   the ICON domain.
-* GRIB decode + de1200→rx reprojection still to be implemented (same
-  machinery as `rv.py`).
+* GRIB decode + reprojection to the rx grid still to be implemented.
+  Note the ICON file is **regular lat/lon** (GRIB template 0, 0.02°,
+  1215×746) — *not* the stereographic de1200 grid `rv.py` handles, so
+  the grid math differs; only the "reproject to rx" concept is shared.
 
 ## Design notes for the reviewer
 
@@ -126,26 +139,36 @@ between steps of that run) is allowed. What must still match is the
    conversion (GRIB step accumulation vs our mm/h rate).
 2. **GRIB decoding is not yet implemented** — files are archived as
    `.grib2.bz2`; the decode step (cfgrib/eccodes or a minimal GRIB2
-   reader) plus de1200→rx reprojection (same machinery as `rv.py`) is
-   part of the Dec experiment, not done yet.
-3. **Lead alignment**: forecast step `k` hours from init must be matched
-   to issue time `t` (nearest step ≥ lead). Init times are 3-hourly, so
-   a 5-min nowcast issue time uses the most recent cycle's step
-   `ceil((t - init)/1h)`; document the exact convention when implemented.
+   reader) plus reprojection to rx is part of the Dec experiment, not
+   done yet. The grid is regular lat/lon (template 0, 0.02°,
+   1215×746), **not** the stereographic de1200 grid `rv.py` decodes —
+   `rv.py` shares only the "map to rx" concept, not the grid math.
+3. **Lead alignment**: the scored quantity for a lead is an *hourly
+   accumulation window* (difference of consecutive `tot_prec` steps),
+   so pick the steps by the **verification window that matches the
+   radar sum** (the hour containing the lead's valid time), not by
+   `ceil`-ing the lead itself. A later valid time from an already-
+   published run is allowed (see "valid time is not hindsight"); what
+   must match is the window, not the step index. Init times are
+   3-hourly and publication runs +44 min behind init — document the
+   exact convention when implemented.
 4. **Leakage check**: unlike ERA5, ICON-D2 fields are forecasts issued
    *before* the issue time — no hindsight. (ERA5 issue-hour wind remains
    reanalysis; review 1 flagged this as a train/serve mismatch that only
    ICON-D2 wind can close.)
-5. **Disk**: full-rate ≈ 226 GB/year for all four variables (measured
-   0.62 GB/day); `icon_d2_sync` keeps everything until free space drops
-   below 40 GB, then prunes oldest-first (365-day hard backstop).
-   (Volume collection was removed 2026-11-08 — it dominated disk
-   growth at 4.2 GB/day.)
+5. **Disk**: 7 vars × 8 steps ≈ 640 MB/day ≈ **234 GB/year**
+   (measured 270 MB/day for 4 vars × 5 steps, scaled; cloud fields
+   ~1.1 MB/file confirmed on the index); `icon_d2_sync` keeps
+   everything until free space drops below 40 GB, then prunes
+   oldest-first (365-day hard backstop). (Volume collection was
+   removed 2026-11-08 — it dominated disk growth at 4.2 GB/day.)
 
 ## Open questions for review
 
 * Should `dbz_cmax` be archived at all steps 0–48 h (3× the disk) to
   enable longer-lead experiments beyond +60 min?
-* For the baseline score: compare ICON-D2 precip at native 2.2 km
-  reprojected to rx, or aggregate our 1 km fields up to 2.2 km (fairer
-  to ICON-D2)?
+* Grid choice for the baseline score — **answered (review at
+  13a87fb): score both.** Primary = our 1 km radar *aggregated up* to
+  the ICON 2.2 km grid plus a neighbourhood FSS (the finer radar must
+  not get credit for detail ICON cannot have); secondary = a 1 km
+  reprojection of ICON (the grid a blend would actually run on).

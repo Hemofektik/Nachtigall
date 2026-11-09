@@ -136,10 +136,12 @@ python3 -m n8igall_mvp.export_onnx --checkpoint runs/multi_lk/best.pt --out runs
   `index_A`/`index_B`) was removed manually 2026-11-08; recent RW `.gz`
   downloads are kept.
 * **Budget trims** (2026-11-08, measured rates): ICON-D2 keeps steps
-  000–004 only (270 MB/day instead of 620); `rv` nowcasts are archived
-  at exact-hour issue times only (24/day instead of 288 — 12 GB/year
-  instead of 141; existing 5-min tars stay); YW stays full rate
-  (163 GB/year). LK flow caches live on the root disk at
+  000–007 plus the clcl/clcm/clch cloud fractions (~640 MB/day,
+  ~234 GB/yr — steps 0–7 because tot_prec windows and late-run
+  fallbacks need the window end, review at 13a87fb); `rv` nowcasts are
+  archived at exact-hour issue times only (24/day instead of 288 —
+  12 GB/year instead of 141; existing 5-min tars stay); YW stays full
+  rate (163 GB/year). LK flow caches live on the root disk at
   `/home/rsc/nachtigall-cache/` with symlinks from
   `data/index_*_flow.{f16,json}` — regenerable in ~37 min, paths
   unchanged.
@@ -554,9 +556,12 @@ coherent): implemented in `baseline_pysteps.py`:
   textureless patches. Test-set evaluations in progress.
 
 **ICON-D2 archiving (item 6 started, 2026-11-07):** `icon_d2_sync.py`
-mirrors u/v 10 m, `tot_prec`, `dbz_cmax` (regular-lat-lon, forecast
-steps 0–4 h — runs renew every 3 h, so 3 h age + 60 min lead covers the
-nowcast window; steps beyond 4 h are never read) for all 8
+mirrors u/v 10 m, `tot_prec`, `dbz_cmax`, and the clcl/clcm/clch
+cloud fractions (regular-lat-lon, forecast steps 0–7 h — 8 steps
+because tot_prec is an accumulation from model start: the hour
+containing a +60 min lead is a difference of consecutive steps, and a
+late run falls back one cycle, needing step 5 at issue 15:50; see
+`MAX_STEP`) for all 8
 3-hourly cycles into `/data/n8igall/data/nwp/icon_d2/<init>/` — DWD
 retains only the latest run per cycle (~24 h), so the hourly daemon
 now collects it. No single-level 100 m wind exists (only icosahedral
@@ -858,14 +863,34 @@ production size**; revisit scaling only with a multi-season dataset.
       **+0.024 pooled CSI@1.0 at +60 on the untouched test set** —
       new best checkpoint `runs/multi_lk_cloud/best.pt` (2026-11-09);
       second seed running
-- [ ] Probabilistic heads scored as probabilities (currently balanced
-      BCE, scored as CSI at logit > 0)
+- [ ] **Experiment roadmap** (adopted from review at 13a87fb,
+      cheap-first, each with a falsification check on the frozen test /
+      val; GPU free after seed 1):
+      1. fixed lead-wise blend of `multi_lk_cloud` + LK (weights fit
+         *off* the test set; add RV once the hourly archive is scored;
+         falsified if no lead separates from the better single system
+         within day-level spread)
+      2. average seed 0 + seed 1 predictions (falsified if the mean
+         doesn't beat the better seed by day; no third seed)
+      3. one more RADKLIM season at 30–60 min issue stride (same
+         19-frame 5-min history; falsified if the frozen autumn test
+         doesn't move beyond day-level spread)
+      4. score the probability heads properly — Brier + reliability
+         curve + multi-scale FSS, eval-only, val slice by lead
+         (falsified-relevant: if prob scores and hard CSI pick
+         different checkpoints, pooled CSI alone can't rank models)
+      5. 180° flip augmentation (one run; falsified if no separation
+         on the frozen test)
 - [ ] ICON-D2 first use, staged (see `docs/icon-d2-integration-plan.md`
       timeline): matched-window **baseline scoring this week** (no
       training), **input ablation ~2026-12-07** (first month of
       archive), proper run ~Feb 2027, ERA5→ICON wind swap ~May 2027,
       full-year ICON-native index ~Nov 2027 (no historical archive
       exists — clock started 2026-11-06)
+- [ ] cloud.py gap handling (review at 13a87fb): a missing issue hour
+      falls through `searchsorted` to the *next later* record — not
+      nearest, not previous. No-op on the gapless ERA5 store; fix
+      before ICON cloud fractions use the same sampler
 - [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix
