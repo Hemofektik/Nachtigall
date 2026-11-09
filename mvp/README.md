@@ -455,6 +455,43 @@ LK only edges it at +5 (0.404 vs 0.396).
 * Video: `output/pred_vs_actual_multilk_20240926.mp4` (with
   `--bias-calib`).
 
+### Cloud channels: `multi_lk_cloud` (2026-11-09) — new best
+
+Same recipe as `multi_lk` plus **3 ERA5 cloud-fraction channels**
+(low/mid/high; `--cloud data/wind/era5_cloud.npz`, 34 inputs total,
+seed 0). 10 epochs, best checkpoint at ep5. Step 7 on the untouched
+test set (2,824 samples), **pooled CSI @ 1.0**:
+
+| Lead | multi_lk_cloud | multi_lk | Δ |
+|---|---|---|---|
+| +5 | 0.725 | 0.729 | −0.004 |
+| +10 | 0.639 | 0.640 | −0.001 |
+| +15 | 0.592 | 0.590 | +0.003 |
+| +20 | 0.550 | 0.549 | +0.002 |
+| +25 | 0.522 | 0.516 | +0.006 |
+| +30 | 0.497 | 0.492 | +0.005 |
+| +35 | 0.466 | 0.460 | +0.006 |
+| +40 | 0.437 | 0.435 | +0.002 |
+| +45 | 0.420 | 0.407 | **+0.012** |
+| +50 | 0.399 | 0.379 | **+0.020** |
+| +55 | 0.382 | 0.360 | **+0.022** |
+| +60 | **0.361** | 0.336 | **+0.024** |
+
+* **Neutral at short leads, monotonically growing gain toward +60**
+  (+7 % relative at +60) — the pattern reproduced on validation
+  (+0.017 @+60) *and* the untouched test set (+0.024 @+60), so it is
+  not a split artifact. Largest single-feature gain so far, exactly
+  where the model is weakest.
+* Light rain (pooled CSI@0.1) flat through +45, also **+0.022 @+60** —
+  no short-lead tradeoff.
+* Caveat: single seed — second seed (`multi_lk_cloud_s1`) running.
+* Bug fixed on the way: `compute_bias_calib` created the CloudSampler
+  but never passed it to the dataset (31 vs 34 channels) — `1f4096a`.
+* Step 8 bias on train split: factors 0.678–0.838 (peak +48 % bias at
+  +20…25) → `runs/multi_lk_cloud/bias_calib.npz`.
+* Video: `output/pred_vs_actual_multicloud_20240926.mp4` (compare the
+  +45…+60 frames against `pred_vs_actual_multilk_20240926.mp4`).
+
 ### Test-set results after the sign fix (`multi_prob2`, 2026-11-05)
 
 Untouched test set (2,824 real-time samples), pooled CSI:
@@ -814,10 +851,21 @@ production size**; revisit scaling only with a multi-season dataset.
       wind upslope/divergence sign flips, ERA5 hindsight averaging
       removed, rollout channel order, bias-calib script, pooled-CSI
       checkpoint selection, README front matter — see "Review fixes"
-- [ ] Re-run rollout rejection with fixed channels (previous verdict
-      measured with scrambled flow/wind order)
-- [ ] ICON-D2 forecast wind as model input (archived; ERA5 reanalysis
-      is train/serve-mismatched at inference)
+- [x] Corrected rollout retest (fixed channel order, LK flow,
+      train-split bias): matches direct at +5/+10, still collapses from
+      +25 — direct single-pass verdict stands (`runs/multi_lk/rollout_test.json`)
+- [x] Cloud channels (3× ERA5 cloud fraction): neutral at short leads,
+      **+0.024 pooled CSI@1.0 at +60 on the untouched test set** —
+      new best checkpoint `runs/multi_lk_cloud/best.pt` (2026-11-09);
+      second seed running
+- [ ] Probabilistic heads scored as probabilities (currently balanced
+      BCE, scored as CSI at logit > 0)
+- [ ] ICON-D2 first use, staged (see `docs/icon-d2-integration-plan.md`
+      timeline): matched-window **baseline scoring this week** (no
+      training), **input ablation ~2026-12-07** (first month of
+      archive), proper run ~Feb 2027, ERA5→ICON wind swap ~May 2027,
+      full-year ICON-native index ~Nov 2027 (no historical archive
+      exists — clock started 2026-11-06)
 - [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix

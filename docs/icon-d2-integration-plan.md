@@ -44,21 +44,34 @@ daemon:
 
 ## Timeline and decision gates
 
+**Archive status (2026-11-09):** first init 2026-11-06 18Z; 24 cycles /
+559 MB so far, steps **000–004 only** (`MAX_STEP=4` since 2026-11-08 —
+steps 5–12 are never read: runs renew every 3 h, so 3 h age + 60 min
+lead is the oldest field a nowcast can draw; ~270 MB/day ≈ 100 GB/yr).
+
 **Retention note (review at ba2279c):** the original 7-day `KEEP_DAYS`
 would have pruned cycles before the gates below could be met — 7 days ×
 48 issues/day = 336 samples, while 1,400 samples need ~29 days and 4,300
 need ~90 days. Pruned cycles cannot be refetched (opendata keeps only
-the latest run per cycle). **`KEEP_DAYS` is now 90** (~60 GB at
-~0.7 GB/day; 236 GB were free), raised 2026-11-08 before any prune ran
-(archiving started the same day).
+the latest run per cycle). **`KEEP_DAYS` is now 365 as a hard backstop
+only** — normal pruning is space-guarded (keep everything until <40 GB
+free, then oldest first; user directive 2026-11-08). The age rules were
+raised 2026-11-08 before any prune ran.
+
+**DWD keeps no historical ICON archive** — the clock cannot be
+backfilled, so any ICON-input model must train on issue times
+≥ 2026-11-06. Our existing indexes (`index_multi` 2024–25,
+`index_test_rt` Oct 23–Nov 1) predate the archive and can never carry
+ICON inputs.
 
 | When | Milestone | Gate |
 |---|---|---|
-| now → +2 weeks | archive accumulates | **score a matched-window baseline** on real-time data: ICON-D2 `tot_prec` vs our model / LK / persistence, by lead and by regime (wet/dry, heavy/light). Also score `composite/rv` (rv.py already converts mm/5min ×12) whenever local RV tars exist. |
+| **this week (by ~2026-11-16)** | 3–10 days of archive | **first use — score a matched-window baseline** (no training needed): decode `dbz_cmax`/`tot_prec`, score vs radar by lead and regime; also finally score `composite/rv` (archived, never scored). 3 days = smoke test, 2 weeks = first trustworthy number |
 | before any ICON retrain | cheap checks (see below) | **fixed blend or residual feature on a frozen slice** — complementary value, not a standalone win over LK, is the question. Uncertainty on events/days, not overlapping pixels. |
-| ~+1 month (Dec 2026) | ~1,400 samples (30-min stride, needs ~29 days) | **ablation experiment**: add `tot_prec`/`dbz_cmax` channels to a fine-tune of `multi_lk`; compare on the real-time test set. Small sample → directional signal only. |
-| ~+3 months (Feb 2027) | ~4,300 samples (needs ~90 days) | **proper training run** if the ablation is positive (reference: current index = 8,774 samples over 2 seasons). |
-| ~+6 months | winter+spring covered | seasonally representative index; consider replacing ERA5 wind with archived ICON-D2 wind (closes the train/serve mismatch flagged in review 1). |
+| **~2026-12-07 (+1 month)** | ~1,400 samples (30-min stride, needs ~29 days) | **first use as model input — ablation**: add `tot_prec`/`dbz_cmax` channels to a fine-tune of `multi_lk_cloud` on a Nov-6+ index, vs an ERA5 control on the *same* window (controls for window difference). Small sample → directional signal only |
+| **~2027-02-06 (+3 months)** | ~4,300 samples (needs ~90 days) | **proper training run** if the ablation is positive (reference: current index = 8,774 samples over 2 seasons) |
+| **~2027-05 (+6 months)** | winter+spring covered | seasonally representative index; **replace ERA5 wind with archived ICON-D2 wind** — closes the train/serve mismatch flagged in review 1. ICON single-levels have no 100 m (steering-level channels change) → full retrain, not fine-tune |
+| **~2027-11 (+1 year)** | full year of ICON archive | ICON-native year-long index replacing ERA5 entirely — matches the one-year retention policy; needs the bigger disk if the current one is tight |
 
 Interim (unvalidated, needs no training): inference-time blending of
 ICON-D2 precip into the output with weight growing by lead — a hack to
