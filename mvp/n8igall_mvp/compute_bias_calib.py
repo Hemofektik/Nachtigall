@@ -74,7 +74,8 @@ def main(argv: list[str] | None = None) -> int:
     from n8igall_mvp.train import RadolanDataset
     ds = RadolanDataset(samples, crop=None,
                         static_channels=static["channels"].astype(np.float32),
-                        wind_sampler=wind, leads=leads, flow=args.flow,
+                        wind_sampler=wind, leads=leads,
+                        cloud_sampler=cloud, flow=args.flow,
                         flow_cache=args.flow_cache,
                         flow_estimator=args.flow_estimator)
 
