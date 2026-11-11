@@ -862,16 +862,29 @@ production size**; revisit scaling only with a multi-season dataset.
 - [x] Cloud channels (3× ERA5 cloud fraction): neutral at short leads,
       **+0.024 pooled CSI@1.0 at +60 on the untouched test set** —
       new best checkpoint `runs/multi_lk_cloud/best.pt` (2026-11-09);
-      second seed running
+      second seed `multi_lk_cloud_s1` finished 2026-11-10: ties s0
+      through +40 (±0.002) but worse at +45…+60 (−0.012…−0.019, test
+      0.348 vs 0.361 @+60) — seed variance lives at long leads, s0
+      stays champion
 - [ ] **Experiment roadmap** (adopted from review at 13a87fb,
       cheap-first, each with a falsification check on the frozen test /
       val; GPU free after seed 1):
-      1. fixed lead-wise blend of `multi_lk_cloud` + LK (weights fit
-         *off* the test set; add RV once the hourly archive is scored;
-         falsified if no lead separates from the better single system
-         within day-level spread)
+      1. ✗ **falsified 2026-11-11** — fixed lead-wise blend of
+         `multi_lk_cloud` + LK (`blend_leads.py`; per-lead w fit on the
+         training-index val tail, never on test; raw counts:
+         `runs/multi_lk_cloud/blend_lk.json`): **no lead separates
+         from the model beyond day-level spread**. Best is +0.004 @+5
+         (9/10 days; day mean +0.005 ± 0.006 — inside the spread);
+         +50…+60 pooled −0.001…−0.002 despite 7/10 day wins. Fit wanted
+         w=1.00 for +10…+45 and only 0.90/0.80/0.75 at +50/+55/+60.
+         Model dominates LK everywhere (0.725 vs 0.719 @+5, 0.361 vs
+         0.338 @+60) → **don't ship the blend**. (First run optimized
+         POD by mistake — `_csi` dropped fa from the denominator —
+         archived as `blend_lk_pod.json`; lesson: validate any new
+         metric against a known `test_metrics.json` value first)
       2. average seed 0 + seed 1 predictions (falsified if the mean
-         doesn't beat the better seed by day; no third seed)
+         doesn't beat the better seed by day; no third seed) —
+         running 2026-11-11 (`ensemble_seeds.py`)
       3. one more RADKLIM season at 30–60 min issue stride (same
          19-frame 5-min history; falsified if the frozen autumn test
          doesn't move beyond day-level spread)
