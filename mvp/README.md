@@ -882,9 +882,13 @@ production size**; revisit scaling only with a multi-season dataset.
          POD by mistake — `_csi` dropped fa from the denominator —
          archived as `blend_lk_pod.json`; lesson: validate any new
          metric against a known `test_metrics.json` value first)
-      2. average seed 0 + seed 1 predictions (falsified if the mean
-         doesn't beat the better seed by day; no third seed) —
-         running 2026-11-11 (`ensemble_seeds.py`)
+      2. ✗ **falsified 2026-11-11** — seed ensemble (`ensemble_seeds.py`,
+         s0+s1 prediction mean, `runs/multi_lk_cloud/ensemble_s0s1.json`):
+         short/mid leads +0.0004…+0.0011 but every day-mean inside its
+         spread; **+45…+60 loses to s0 on 0/10 days** (−0.004…−0.008) —
+         s1's long-lead deficit is systematic, not uncorrelated noise,
+         so averaging drags the ensemble down. No third seed; s0 stays
+         champion (0.361 @+60)
       3. one more RADKLIM season at 30–60 min issue stride (same
          19-frame 5-min history; falsified if the frozen autumn test
          doesn't move beyond day-level spread)
