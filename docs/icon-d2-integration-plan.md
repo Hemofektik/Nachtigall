@@ -77,7 +77,7 @@ ICON inputs.
 
 | When | Milestone | Gate |
 |---|---|---|
-| **this week (by ~2026-11-16)** | 3–10 days of archive | **first use — score a matched-window baseline** (no training needed): decode `dbz_cmax`/`tot_prec`, score vs radar by lead and regime; also finally score `composite/rv` (archived, never scored). 3 days = smoke test, 2 weeks = first trustworthy number |
+| **this week (by ~2026-11-16)** | 3–10 days of archive | ✅ **done 2026-11-11** (5 days early) — `icon_baseline.py` scored the matched-window baseline: 571 issues over Nov 9–10, ICON beats persistence from +30 (day wins 3/3 at +60, +0.098 CSI@1.0) and overtakes `rv` around +25; `composite/rv` scored for the first time ever (0.512 @+5 → 0.363 @+60). Caveat: 2-day window, hourly-accumulation basis — 2 weeks = first trustworthy number. Results: `runs/icon_baseline.json` |
 | before any ICON retrain | cheap checks (see below) | **fixed blend or residual feature on a frozen slice** — complementary value, not a standalone win over LK, is the question. Uncertainty on events/days, not overlapping pixels. |
 | **~2026-12-07 (+1 month)** | ~1,400 samples (30-min stride, needs ~29 days) | **first use as model input — ablation**: add `tot_prec`/`dbz_cmax` channels to a fine-tune of `multi_lk_cloud` on a Nov-6+ index, vs an ERA5 control on the *same* window (controls for window difference). Small sample → directional signal only |
 | **~2027-02-06 (+3 months)** | ~4,300 samples (needs ~90 days) | **proper training run** if the ablation is positive (reference: current index = 8,774 samples over 2 seasons) |
@@ -137,12 +137,16 @@ between steps of that run) is allowed. What must still match is the
    rain rate), so the network can compare forecast echo against observed
    echo directly; `tot_prec` needs a unit/accumulation convention
    conversion (GRIB step accumulation vs our mm/h rate).
-2. **GRIB decoding is not yet implemented** — files are archived as
-   `.grib2.bz2`; the decode step (cfgrib/eccodes or a minimal GRIB2
-   reader) plus reprojection to rx is part of the Dec experiment, not
-   done yet. The grid is regular lat/lon (template 0, 0.02°,
-   1215×746), **not** the stereographic de1200 grid `rv.py` decodes —
-   `rv.py` shares only the "map to rx" concept, not the grid math.
+2. **GRIB decoding implemented 2026-11-11** (`icon_baseline.py`):
+   bz2 → `eccodes.codes_new_from_message`, angles in 1e-6 deg (Lo1
+   356.06 → −3.94 for pyproj), missing sentinel 9999 (~17% domain
+   edge), row direction taken from La1 vs La2 — not guessed from
+   scanningMode. Reprojection maps rx pixel centers to fractional
+   ICON lat/lon (`map_coordinates`, order 1 / mask order 0), the same
+   pattern as `rv.py`'s de1200→rx resampler. The grid is regular
+   lat/lon (template 0, 0.02°, 1215×746), **not** the stereographic
+   de1200 grid `rv.py` decodes — only the "map to rx" concept is
+   shared.
 3. **Lead alignment**: the scored quantity for a lead is an *hourly
    accumulation window* (difference of consecutive `tot_prec` steps),
    so pick the steps by the **verification window that matches the

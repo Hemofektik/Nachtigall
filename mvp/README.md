@@ -898,9 +898,20 @@ production size**; revisit scaling only with a multi-season dataset.
          different checkpoints, pooled CSI alone can't rank models)
       5. 180° flip augmentation (one run; falsified if no separation
          on the frozen test)
+- [x] ICON-D2 matched-window **baseline scored 2026-11-11**
+      (`icon_baseline.py`, `runs/icon_baseline.json`; plan checks 1, 3,
+      4 done — decode+reproject implemented, rv scored for the first
+      time): 571 issues Nov 9–10, hourly-accumulation CSI@1.0 —
+      **ICON beats persistence from +30, +0.098 at +60 (3/3 days)**
+      and overtakes rv around +25 (rv 0.512 @+5 → 0.363 @+60; ICON
+      flat 0.467→0.447). ICON's +60 edge over persistence (+0.098)
+      exceeds the model's (+0.068) — directionally confirms
+      complementary value at long leads (different windows/basis, not
+      directly comparable). Caveat: 2-day window; 2 weeks = first
+      trustworthy number
 - [ ] ICON-D2 first use, staged (see `docs/icon-d2-integration-plan.md`
-      timeline): matched-window **baseline scoring this week** (no
-      training), **input ablation ~2026-12-07** (first month of
+      timeline): ~~matched-window baseline scoring~~ ✅ done 2026-11-11,
+      **input ablation ~2026-12-07** (first month of
       archive), proper run ~Feb 2027, ERA5→ICON wind swap ~May 2027,
       full-year ICON-native index ~Nov 2027 (no historical archive
       exists — clock started 2026-11-06)
@@ -908,6 +919,9 @@ production size**; revisit scaling only with a multi-season dataset.
       falls through `searchsorted` to the *next later* record — not
       nearest, not previous. No-op on the gapless ERA5 store; fix
       before ICON cloud fractions use the same sampler
+- [ ] ICON baseline regime split (plan check 2): current score is
+      pooled over 2 days; split wet/dry and heavy/light on a frozen
+      slice once ~2 weeks of archive exist (2026-11-20)
 - [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix
