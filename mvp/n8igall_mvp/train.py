@@ -53,7 +53,8 @@ class RadolanDataset(Dataset):
                  wind_sampler=None, leads: list[int] | None = None,
                  cloud_sampler=None, flow: bool = False,
                  flow_cache: Path | None = None,
-                 flow_estimator: str = "farneback"):
+                 flow_estimator: str = "farneback",
+                 flip180: bool = False):
         self.samples = samples
         self.crop = crop
         self.static = static_channels  # [C_s, H, W] float32 or None
@@ -62,6 +63,7 @@ class RadolanDataset(Dataset):
         self.leads = leads              # multi-lead target minutes or None
         self.flow = flow                # append optical-flow channels
         self.flow_estimator = flow_estimator  # fallback estimator on miss
+        self.flip180 = flip180          # train-only 180-deg augmentation
         # Precomputed LK flow cache (ts-keyed memmap). Only the stem and
         # timestamp table are pickled to dataloader workers; the memmap is
         # opened lazily per worker (pickling it would load GBs into RAM).
@@ -109,6 +111,32 @@ class RadolanDataset(Dataset):
                             self.samples[idx].inputs[-1]).group(1)
             t_now = _dt.strptime(ts, "%y%m%d%H%M")
             x = np.concatenate([x, self.cloud.channels_for(t_now)], axis=0)
+        if self.flip180 and random.random() < 0.5:
+            # 180-deg rotation: flip both spatial axes. Vector channels
+            # must negate (both components flip under 180 deg); scalars
+            # (elevation, slope, divergence, cloud fractions) are
+            # rotation-invariant. Channel layout: radar 0..18, wind
+            # [u10,v10,u100,v100,upslope,div], flow [u,v], static
+            # [elev,slope,sin_a,cos_a], cloud last.
+            x = np.ascontiguousarray(x[:, ::-1, ::-1])
+            y = np.ascontiguousarray(y[:, ::-1, ::-1])
+            mask = np.ascontiguousarray(mask[:, ::-1, ::-1])
+            n_radar = len(self.samples[idx].inputs)
+            if self.wind is not None:
+                # u10, v10, u100, v100 negate; upslope = -(u.dh/dx +
+                # v.dh/dy) negates too; divergence is a scalar trace
+                for ch in (0, 1, 2, 3, 4):      # wind block, relative
+                    x[n_radar + ch] = -x[n_radar + ch]
+            if self.flow:
+                fi = n_radar + (0 if self.wind is None else 6)
+                x[fi] = -x[fi]                  # flow u
+                x[fi + 1] = -x[fi + 1]          # flow v
+            if self.static is not None:
+                si = x.shape[0] - (0 if self.cloud is None else 3) \
+                    - len(self.static)
+                # sin_a/cos_a are both components of the downslope vector
+                x[si + 2] = -x[si + 2]
+                x[si + 3] = -x[si + 3]
         if self.crop:
             _, h, w = x.shape
             r = random.randint(0, h - self.crop)
@@ -353,6 +381,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--crop", type=int, default=512)
+    p.add_argument("--flip180", action="store_true",
+                   help="train-only 180-degree rotation augmentation "
+                        "(vector channels negated; val stays unflipped)")
     p.add_argument("--base-channels", type=int, default=32)
     p.add_argument("--depth", type=int, default=3,
                    help="U-Net encoder levels (3 = original, 4 = ~7M params)")
@@ -427,7 +458,8 @@ def main(argv: list[str] | None = None) -> int:
                               wind_sampler=wind_sampler, leads=leads,
                               cloud_sampler=cloud_sampler, flow=args.flow,
                               flow_cache=args.flow_cache,
-                              flow_estimator=args.flow_estimator)
+                              flow_estimator=args.flow_estimator,
+                              flip180=args.flip180)
     val_ds = RadolanDataset(val_s, crop=None, static_channels=static,
                             wind_sampler=wind_sampler, leads=leads,
                             cloud_sampler=cloud_sampler, flow=args.flow,
