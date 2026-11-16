@@ -866,9 +866,11 @@ production size**; revisit scaling only with a multi-season dataset.
       through +40 (±0.002) but worse at +45…+60 (−0.012…−0.019, test
       0.348 vs 0.361 @+60) — seed variance lives at long leads, s0
       stays champion
-- [ ] **Experiment roadmap** (adopted from review at 13a87fb,
-      cheap-first, each with a falsification check on the frozen test /
-      val; GPU free after seed 1):
+- [x] **Experiment roadmap — fully executed 2026-11-16** (adopted
+      from review at 13a87fb, cheap-first, each with a falsification
+      check on the frozen test / val): items 1, 2, 5 falsified; 3 weak
+      positive (new champion); 4 measured. Final champion:
+      **`runs/multi_lk_cloud_3s/best.pt` (0.368 @+60)**:
       1. ✗ **falsified 2026-11-11** — fixed lead-wise blend of
          `multi_lk_cloud` + LK (`blend_leads.py`; per-lead w fit on the
          training-index val tail, never on test; raw counts:
@@ -887,17 +889,43 @@ production size**; revisit scaling only with a multi-season dataset.
          short/mid leads +0.0004…+0.0011 but every day-mean inside its
          spread; **+45…+60 loses to s0 on 0/10 days** (−0.004…−0.008) —
          s1's long-lead deficit is systematic, not uncorrelated noise,
-         so averaging drags the ensemble down. No third seed; s0 stays
-         champion (0.361 @+60)
-      3. one more RADKLIM season at 30–60 min issue stride (same
-         19-frame 5-min history; falsified if the frozen autumn test
-         doesn't move beyond day-level spread)
-      4. score the probability heads properly — Brier + reliability
-         curve + multi-scale FSS, eval-only, val slice by lead
-         (falsified-relevant: if prob scores and hard CSI pick
-         different checkpoints, pooled CSI alone can't rank models)
-      5. 180° flip augmentation (one run; falsified if no separation
-         on the frozen test)
+         so averaging drags the ensemble down. No third seed (s0 held
+         the crown at 0.361 @+60 until item 3's 3-season run took it:
+         0.368)
+      3. ✓ **done 2026-11-14 — weak positive, working default** —
+         autumn 2024 downloaded (26,496 files, full 5-min), 3-season
+         index `data/index_3s.json` (13,188 samples after dropping 2
+         with NaN rain from a Dec-5 radar outage), trained
+         `multi_lk_cloud_3s`: pooled CSI@1.0 **+ at 11/12 leads**
+         (+0.011 peak @+40, +0.008 @+60, 12/12 at thr 0.1), val 0.439
+         vs 0.430. Day-level check (`compare_checkpoints.py`,
+         `runs/compare_2s_vs_3s.json`): separates beyond spread **only
+         at +5** (10/10 days); pooled gains sit on rainy days (pooled
+         positive while unweighted day means stay inside std) — not
+         confirmed by the strict criterion, but never worse, so
+         **`multi_lk_cloud_3s/best.pt` (0.368 @+60) is the new
+         champion**; re-check when the test window grows
+      4. ✓ **done 2026-11-12** — `prob_reliability.py` (Brier + skill,
+         10-bin reliability + ECE, soft multi-scale FSS, hard CSI
+         alongside, val tail): **the falsification-relevant case is
+         real** — `multi_prob2` has the best val hard CSI at +60 but
+         2.5× worse Brier than the others, so pooled CSI alone cannot
+         rank models. All heads have **negative Brier skill past
+         ~+15** (useful only at short leads); `multi_prob2` heads
+         badly miscalibrated (ECE 0.10–0.17); prob@0.5 much worse
+         than the deterministic head (0.204 vs 0.272 @+60). Heads are
+         **not serveable without recalibration**
+      5. ✗ **falsified 2026-11-16 — clearest rejection of the five**
+         — `--flip180` in train.py (vector channels negated, scalars
+         invariant, 17 channel-level assertions), run
+         `multi_lk_cloud_3s_flip`: **negative at all 12 leads pooled**
+         (−0.012…−0.019), day means below zero beyond spread at most
+         leads, 0–3/10 day wins (`runs/compare_3s_vs_flip.json`);
+         val agreed (0.433 vs 0.439). Likely cause: German radar
+         climatology isn't rotation-symmetric (orography, prevailing
+         westerlies) — flipped samples teach a wrong prior. **Roadmap
+         fully executed 2026-11-16**; next gate: ICON input ablation
+         ~2026-12-07
 - [x] ICON-D2 matched-window **baseline scored 2026-11-11**
       (`icon_baseline.py`, `runs/icon_baseline.json`; plan checks 1, 3,
       4 done — decode+reproject implemented, rv scored for the first
