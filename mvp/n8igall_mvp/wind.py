@@ -215,8 +215,11 @@ class WindSampler:
         train/serve-correct source and is archived by icon_d2_sync.
         """
         t0 = np.datetime64(t.replace(minute=0, second=0, microsecond=0))
-        i0 = int(np.searchsorted(self.times, t0))
-        i0 = min(max(i0, 0), len(self.times) - 1)
+        # nearest-hour (ties -> earlier) with a gap guard - plain
+        # searchsorted falls through to the next later record on a hole
+        # (the store has a 2025-06..2026-09 gap; review at 13a87fb)
+        from .cloud import _nearest_index
+        i0 = _nearest_index(self.times, t0)
 
         u10, v10, u100, v100 = self._interp(i0)
 

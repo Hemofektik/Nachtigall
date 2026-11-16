@@ -425,6 +425,10 @@ peaks ~1.56 at +20), light rain still fades at +60.
 `runs/multi_prob2/model.onnx` (30.9 MB). The last unchecked box on
 the original list — C++ inference via ONNX Runtime is now unblocked.
 
+**Champion export (2026-11-16):** `multi_lk_cloud_3s/best.pt` →
+`runs/multi_lk_cloud_3s/model.onnx` (30.9 MB), parity 1.11e-06. This
+is the model to wire into the C++ path — not `multi_prob2`.
+
 ### Final model: `multi_lk` (2026-11-08) — first run with fully correct inputs
 
 Trained after the external-review fixes (wind sign flips, issue-hour-only
@@ -943,10 +947,15 @@ production size**; revisit scaling only with a multi-season dataset.
       archive), proper run ~Feb 2027, ERA5→ICON wind swap ~May 2027,
       full-year ICON-native index ~Nov 2027 (no historical archive
       exists — clock started 2026-11-06)
-- [ ] cloud.py gap handling (review at 13a87fb): a missing issue hour
-      falls through `searchsorted` to the *next later* record — not
-      nearest, not previous. No-op on the gapless ERA5 store; fix
-      before ICON cloud fractions use the same sampler
+- [x] cloud.py / wind.py gap handling (review at 13a87fb) — fixed
+      2026-11-16: `searchsorted` fell through to the *next later*
+      record on a hole; now nearest-hour (ties → earlier) with a
+      `MAX_GAP_H=3` guard that raises instead of serving data from the
+      wrong side. **The ERA5 store has a real 16-month hole**
+      (2025-06-01 → 2026-09-30, the middle fetch never landed) — both
+      samplers now fail loudly on it. No-op for our indices (they sit
+      in 2024-06..2025-05 and 2026-10..11); the hole must be refetched
+      before any index spans it
 - [ ] ICON baseline regime split (plan check 2): current score is
       pooled over 2 days; split wet/dry and heavy/light on a frozen
       slice once ~2 weeks of archive exist (2026-11-20)

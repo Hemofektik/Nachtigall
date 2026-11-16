@@ -128,6 +128,28 @@ def fetch(start: date, end: date, out: Path) -> None:
           f"({out.stat().st_size/1e6:.1f} MB)")
 
 
+MAX_GAP_H = 3  # hourly stores: nearest record must be within this
+
+
+def _nearest_index(times: np.ndarray, t0: np.datetime64) -> int:
+    """Index of the record nearest to ``t0`` (ties -> earlier).
+
+    Raises if the nearest record is more than MAX_GAP_H away, so a
+    hole in the store fails loudly instead of silently serving data
+    from the wrong side of the gap.
+    """
+    i = int(np.searchsorted(times, t0))
+    if i > 0 and (i >= len(times)
+                  or times[i] - t0 >= t0 - times[i - 1]):
+        i -= 1
+    i = min(max(i, 0), len(times) - 1)
+    if abs(times[i] - t0) > np.timedelta64(MAX_GAP_H, "h"):
+        raise ValueError(
+            f"no record within {MAX_GAP_H}h of {t0} "
+            f"(nearest {times[i]}) - store gap?")
+    return i
+
+
 class CloudSampler:
     """Samples the coarse cloud store onto the RADOLAN grid (bilinear)."""
 
@@ -154,10 +176,16 @@ class CloudSampler:
         self._w = [(1 - wy) * (1 - wx), (1 - wy) * wx, wy * (1 - wx), wy * wx]
 
     def channels_for(self, t: datetime) -> np.ndarray:
-        """[3, H, W] cloud fractions at hour(t), NaN gaps filled with 0."""
+        """[3, H, W] cloud fractions at hour(t), NaN gaps filled with 0.
+
+        Nearest-hour lookup (ties -> earlier record). Plain
+        ``searchsorted`` falls through to the *next later* record on a
+        gap, which would silently serve data from months ahead (the
+        store has a 2025-06..2026-09 hole); a nearest record further
+        than MAX_GAP_H away raises instead of lying (review at 13a87fb).
+        """
         t0 = np.datetime64(t.replace(minute=0, second=0, microsecond=0))
-        i = int(np.searchsorted(self.times, t0))
-        i = min(max(i, 0), len(self.times) - 1)
+        i = _nearest_index(self.times, t0)
         n_lat, n_lon = self.lat.size, self.lon.size
         grid = self.data[i].reshape(n_lat, n_lon, 3)
         out = np.zeros((3,) + self._w[0].shape, dtype=np.float32)
