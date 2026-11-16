@@ -273,6 +273,33 @@ def rate_explosion_penalty(pred: torch.Tensor, target: torch.Tensor,
     return weight * (rate_over * mask).sum() / mask.sum().clamp(min=1.0)
 
 
+def bias_overshoot_penalty(pred: torch.Tensor, target: torch.Tensor,
+                           mask: torch.Tensor, weight: float = 0.1
+                           ) -> torch.Tensor:
+    """Penalize the per-lead mean-rate ratio exceeding 1 (overshoot fix).
+
+    The measured overshoot is *multiplicative*: bias[L] =
+    mean(pred_rate)/mean(obs_rate) peaks ~1.56 at +20. The existing
+    rate_explosion_penalty is an absolute per-pixel overage diluted
+    over mostly-dry pixels, so it barely moves that ratio. This term
+    optimizes the exact quantity compute_bias_calib measures: per lead,
+    relu(bias - 1), averaged over leads. One-sided (underprediction is
+    not this bug); denominator clamped so all-dry batches can't blow up.
+    """
+    pr = torch.expm1(pred)
+    yr = torch.expm1(target)
+    m = mask.float()
+    sum_p = (pr * m).flatten(2).sum(-1)          # [B,L]
+    sum_o = (yr * m).flatten(2).sum(-1)          # [B,L]
+    # only leads with real observed rain: the ratio is meaningless (and
+    # unbounded) when the denominator is ~0
+    valid = sum_o > 1.0
+    if not bool(valid.any()):
+        return pred.sum() * 0.0                   # keep the graph intact
+    bias = sum_p[valid] / sum_o[valid]
+    return weight * F.relu(bias - 1.0).mean()
+
+
 def gradient_l1_loss(pred: torch.Tensor, target: torch.Tensor,
                      mask: torch.Tensor, weight: float = 1.0) -> torch.Tensor:
     """L1 on spatial finite differences of pred vs target (log1p space).

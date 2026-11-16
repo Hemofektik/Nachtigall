@@ -44,6 +44,16 @@ def make_loss(name: str):
                     + 0.5 * soft_csi_loss(pred, target, mask, threshold=1.0)
                     + rate_explosion_penalty(pred, target, mask))
         return loss
+    if name == "huber_csi_rate_bias":
+        # overshoot experiment: also penalize the per-lead mean-rate
+        # ratio > 1 (the quantity bias_calib measures; peaks ~1.56 @+20)
+        from .model import bias_overshoot_penalty
+        def loss(pred, target, mask):
+            return (weighted_huber_loss(pred, target, mask)
+                    + 0.5 * soft_csi_loss(pred, target, mask, threshold=1.0)
+                    + rate_explosion_penalty(pred, target, mask)
+                    + bias_overshoot_penalty(pred, target, mask))
+        return loss
     raise ValueError(f"unknown loss: {name}")
 
 
@@ -388,7 +398,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--depth", type=int, default=3,
                    help="U-Net encoder levels (3 = original, 4 = ~7M params)")
     p.add_argument("--loss", choices=("mse", "huber", "huber_csi",
-                                      "huber_csi_rate"),
+                                      "huber_csi_rate",
+                                      "huber_csi_rate_bias"),
                    default="mse")
     p.add_argument("--residual", action="store_true",
                    help="predict a delta on top of the current radar frame "
