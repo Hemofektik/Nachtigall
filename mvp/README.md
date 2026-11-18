@@ -959,7 +959,20 @@ production size**; revisit scaling only with a multi-season dataset.
 - [ ] ICON baseline regime split (plan check 2): current score is
       pooled over 2 days; split wet/dry and heavy/light on a frozen
       slice once ~2 weeks of archive exist (2026-11-20)
-- [ ] Mid-lead intensity overshoot (~1.56 at +20) after the sign fix
+- [x] Mid-lead intensity overshoot — **loss-term experiment falsified
+      2026-11-18** (`multi_lk_cloud_3s_bias`, loss
+      `huber_csi_rate_bias` = per-lead `relu(mean(pred)/mean(obs)−1)`
+      penalty, `c3813ac`): bias factors **redistributed, not reduced**
+      (mean |bias−1| 0.210 → 0.209; +5…+30 moved away from 1.0,
+      +35…+60 toward it, +60 hit 1.009) and **CSI negative at all 12
+      leads** (−0.002…−0.008, day means beyond spread at ~6 leads,
+      0–2/10 day wins, `runs/compare_3s_vs_bias.json`). Likely cause:
+      the CSI term rewards staying above threshold, so the optimizer
+      paid the weak bias gradient where CSI is insensitive (+60) and
+      got slightly worse where it costs hits (mid leads). **Overshoot
+      stays a post-hoc calibration problem** — render-time bias
+      factors (0.74–1.0) handle it without touching CSI; don't retry
+      the loss route without a fundamentally different shape
 - [ ] Light rain still fades to blur at +60 (deterministic regression)
 - [ ] Heavy rain at long lead: verify on test set after the sign fix
 - [ ] C++ inference integration (ONNX Runtime) in the n8igall library
