@@ -199,6 +199,28 @@ def _yw(rt_dir: Path, t: datetime) -> Path | None:
     return p if p.exists() else None
 
 
+REGIMES = ("dry", "light", "heavy")
+
+
+def _regime(o: np.ndarray, m: np.ndarray) -> str:
+    """Classify one verification window by its observed accumulation.
+
+    dry   : max <= 0.1 mm/h  (below the lowest suite threshold)
+    light : 0.1 < max < 5
+    heavy : max >= 5         (the suite's top threshold)
+    wet   = light + heavy (summed at reporting time).
+    """
+    v = o[m]
+    if v.size == 0:
+        return "dry"
+    mx = float(v.max())
+    if mx <= 0.1:
+        return "dry"
+    if mx < 5.0:
+        return "light"
+    return "heavy"
+
+
 def score_sample(t: datetime) -> dict:
     """One issue: returns {'counts': ..., 'day': ..., 'skip': [...]}."""
     # radar history (19 frames ending at t) + issue frame rate
@@ -238,6 +260,7 @@ def score_sample(t: datetime) -> dict:
         return {"skip": skip or ["obs"]}
 
     counts: dict = {}
+    reg_counts: dict = {}
     day = t.strftime("%y%m%d")
     for L in LEADS:
         H = (t + timedelta(minutes=L)).replace(minute=0, second=0,
@@ -245,6 +268,7 @@ def score_sample(t: datetime) -> dict:
         if H not in obs:
             continue
         o, om = obs[H]
+        reg = _regime(o, om)
         preds = {"icon": icon.get(H), "rv": rv.get(H),
                  "pers": (pers, pers_rate.valid)}   # mm/h x 1 h == mm
         for sysname, pr in preds.items():
@@ -253,9 +277,11 @@ def score_sample(t: datetime) -> dict:
             pdata, pvalid = pr
             m = om & pvalid
             for ti, thr in enumerate(THRESHOLDS):
-                _add(counts.setdefault((sysname, L, ti), {}),
-                     _counts(pdata > thr, o > thr, m))
-    return {"counts": counts, "day": day, "skip": skip}
+                st = _counts(pdata > thr, o > thr, m)
+                _add(counts.setdefault((sysname, L, ti), {}), st)
+                _add(reg_counts.setdefault((sysname, L, ti, reg), {}), st)
+    return {"counts": counts, "regimes": reg_counts, "day": day,
+            "skip": skip}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -281,7 +307,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from multiprocessing import Pool
     acc: dict = {}
+    reg_acc: dict = {}
     day_acc: dict[str, dict] = {}
+    day_reg_acc: dict[str, dict] = {}
     skips: dict[str, int] = {}
     done = 0
     tic = time.time()
@@ -296,6 +324,12 @@ def main(argv: list[str] | None = None) -> int:
                 if ti == TI:
                     d = day_acc.setdefault(res["day"], {})
                     _add(d.setdefault((sysname, L), {}), st)
+            for key, st in res.get("regimes", {}).items():
+                _add(reg_acc.setdefault(key, {}), st)
+                sysname, L, ti, reg = key
+                if ti == TI:
+                    d = day_reg_acc.setdefault(res["day"], {})
+                    _add(d.setdefault((sysname, L, reg), {}), st)
             if done % 100 == 0 or done == len(issues):
                 el = time.time() - tic
                 print(f"{done}/{len(issues)}  {el / done:.1f}s/sample",
@@ -308,10 +342,16 @@ def main(argv: list[str] | None = None) -> int:
         "n_issues": len(issues), "skips": skips,
         "thresholds": list(THRESHOLDS), "leads": LEADS,
         "basis": "hourly accumulation (mm per clock hour; == mm/h)",
+        "regimes": "dry<=0.1 <light<5<=heavy (obs window max, mm/h)",
         "raw_acc": {f"{s}|{L}|{ti}": st
                     for (s, L, ti), st in acc.items()},
+        "raw_regimes": {f"{s}|{L}|{ti}|{r}": st
+                        for (s, L, ti, r), st in reg_acc.items()},
         "raw_days": {d: {f"{s}|{L}": st for (s, L), st in dst.items()}
                      for d, dst in day_acc.items()},
+        "raw_day_regimes": {d: {f"{s}|{L}|{r}": st
+                                for (s, L, r), st in dst.items()}
+                            for d, dst in day_reg_acc.items()},
     }, indent=2))
 
     systems = ("icon", "rv", "pers")
@@ -354,6 +394,56 @@ def main(argv: list[str] | None = None) -> int:
                 "n_days": int(len(deltas)),
             }
     out["day_stats"] = day_stats
+
+    # regime split (plan check 2): pooled CSI per regime, plus wet
+    # (= light + heavy counts summed) and per-day icon-vs-pers spread
+    def _reg_pooled(reg: str) -> dict:
+        keys = ("light", "heavy") if reg == "wet" else (reg,)
+        res: dict = {}
+        for (s, L, ti, r), st in reg_acc.items():
+            if r in keys:
+                _add(res.setdefault((s, L, ti), {}), st)
+        return res
+
+    out["regimes"] = {}
+    regime_tables = {}
+    for reg in ("dry", "wet", "light", "heavy"):
+        rp = _reg_pooled(reg)
+        tbl = {}
+        for L in LEADS:
+            row = {}
+            for s in systems:
+                st = rp.get((s, L, TI))
+                row[s] = _csi(st) if st else None
+            # per-day icon-vs-pers within regime (wet = light+heavy)
+            keys = ("light", "heavy") if reg == "wet" else (reg,)
+            deltas = []
+            for dst in day_reg_acc.values():
+                ci = cp_ = None
+                acc_i: dict = {}
+                acc_p: dict = {}
+                for (s, L2, r2), st in dst.items():
+                    if L2 == L and r2 in keys:
+                        _add(acc_i if s == "icon" else acc_p, st) \
+                            if s in ("icon", "pers") else None
+                if acc_i and acc_p:
+                    ci, cp_ = _csi(acc_i), _csi(acc_p)
+                    if np.isfinite(ci) and np.isfinite(cp_):
+                        deltas.append(ci - cp_)
+            deltas = np.asarray(deltas)
+            row["icon_minus_pers"] = (
+                (row["icon"] - row["pers"])
+                if row["icon"] is not None and row["pers"] is not None
+                else None)
+            row["day_delta_mean"] = (float(deltas.mean())
+                                     if len(deltas) else None)
+            row["day_delta_std"] = (float(deltas.std())
+                                    if len(deltas) else None)
+            row["day_wins"] = int((deltas > 0).sum())
+            row["n_days"] = int(len(deltas))
+            tbl[str(L)] = row
+        out["regimes"][reg] = tbl
+        regime_tables[reg] = tbl
     args.out.write_text(json.dumps(out, indent=2))
 
     print(f"\nskips: {skips}", flush=True)
@@ -370,6 +460,24 @@ def main(argv: list[str] | None = None) -> int:
               if d is not None else "   -  ")
         print(f"{L:>4} | {row[0]:>6} {row[1]:>6} {row[2]:>6} | {dw}",
               flush=True)
+
+    for reg in ("dry", "wet", "light", "heavy"):
+        print(f"\n=== regime: {reg} (icon vs pers, CSI@1.0) ===",
+              flush=True)
+        print("lead |   icon    pers   delta | day win", flush=True)
+        for L in LEADS:
+            r = regime_tables[reg][str(L)]
+            ci = r["icon"]
+            cp_ = r["pers"]
+            dd = r["icon_minus_pers"]
+            print(f"{L:>4} | "
+                  f"{ci:>6.3f} " if ci is not None else f"{L:>4} |    -   ",
+                  end="", flush=True)
+            print(f"{cp_:>6.3f} " if cp_ is not None else "   -   ",
+                  end="", flush=True)
+            print(f"{dd:>+6.3f} | {r['day_wins']}/{r['n_days']}"
+                  if dd is not None else "   -   | -",
+                  flush=True)
     print(f"\nwrote {args.out}", flush=True)
     return 0
 

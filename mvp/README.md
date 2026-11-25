@@ -956,9 +956,16 @@ production size**; revisit scaling only with a multi-season dataset.
       samplers now fail loudly on it. No-op for our indices (they sit
       in 2024-06..2025-05 and 2026-10..11); the hole must be refetched
       before any index spans it
-- [ ] ICON baseline regime split (plan check 2): current score is
-      pooled over 2 days; split wet/dry and heavy/light on a frozen
-      slice once ~2 weeks of archive exist (2026-11-20)
+- [x] ICON baseline **regime split done 2026-11-25** (plan check 2;
+      `runs/icon_baseline_regime.json`, 2,815 issues Nov 9–18, 10
+      days — the window recovered after the vacation sync outage):
+      ICON−pers @+60 = **+0.165 heavy (9/9 day wins)**, +0.162 wet
+      (10/10), +0.044 light (4/7), zero false alarms in dry windows.
+      **ICON is harmful at short leads in light rain** (−0.116 @+5,
+      0/7 days) and crosses over ~+45. Pooled: ICON beats pers from
+      +30 (+0.162 @+60, 10/10), rv owns +5…+30. **Dec ablation
+      implication: feed ICON at +45…+60, regime-aware — it is a
+      long-lead wet-regime input, not a general one**
 - [x] Mid-lead intensity overshoot — **loss-term experiment falsified
       2026-11-18** (`multi_lk_cloud_3s_bias`, loss
       `huber_csi_rate_bias` = per-lead `relu(mean(pred)/mean(obs)−1)`

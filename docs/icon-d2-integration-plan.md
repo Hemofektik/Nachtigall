@@ -103,6 +103,12 @@ Lucas–Kanade is encouraging but *not* required. What matters is
    rule), split **by lead** and **by regime** (wet vs dry, heavy vs
    light). Read a negative result as "no complementary value in this
    window", not "ICON is useless".
+   *✅ Regime split of the baseline done 2026-11-25 (10-day window,
+   Nov 9–18): ICON−pers @+60 = +0.165 heavy (9/9 days), +0.162 wet
+   (10/10), +0.044 light (4/7), none in dry; **negative at short
+   leads in light rain** (−0.116 @+5, 0/7 days), crossover ~+45.
+   The blend/residual check should therefore be lead- and
+   regime-gated: ICON at +45…+60 in wet windows, not everywhere.*
 3. **Uncertainty on events or days**, never on overlapping pixels.
 4. **Score `composite/rv`** in the same pass — the operational nowcast
    baseline has been archived but never scored.
